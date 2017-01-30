@@ -4,7 +4,7 @@
  * IIO Light driver for monitoring ambient light intensity in lux and proximity
  * ir.
  *
- * Copyright (c) 2013-2015, NVIDIA CORPORATION. All rights reserved.
+ * Copyright (c) 2013-2014, NVIDIA CORPORATION. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -14,6 +14,9 @@
  * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
  * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
  * more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <linux/module.h>
@@ -189,21 +192,14 @@ static bool set_main_conf(struct max44005_chip *chip, int mode)
 /* current is in mA */
 static bool set_led_drive_strength(struct max44005_chip *chip, int cur)
 {
-	int ret = 0;
 	if (!chip->supply[LED])
 		goto finish;
 
 	if (cur && !chip->power_utilization[LED])
-		ret = regulator_enable(chip->supply[LED]);
+		regulator_enable(chip->supply[LED]);
 	else if (!cur && chip->power_utilization[LED])
-		ret = regulator_disable(chip->supply[LED]);
+		regulator_disable(chip->supply[LED]);
 
-	if (ret) {
-		dev_err(&chip->client->dev,
-			"%s: regulator %s failed\n", __func__,
-			cur ? "enable" : "disable");
-		return false;
-	}
 finish:
 	chip->power_utilization[LED] = cur ? 1 : 0;
 	return max44005_write(chip, 0xA1, PROX_CONF_REG_ADDR) == 0;
@@ -558,7 +554,7 @@ static int max44005_probe(struct i2c_client *client,
 	}
 
 	/* MAX44006 ALS does not use vled. */
-	if (of_device_is_compatible(client->dev.of_node, "maxim,max44006-siio"))
+	if (of_device_is_compatible(client->dev.of_node, "maxim,max44006"))
 		goto finish;
 
 	chip->supply[LED] = regulator_get(&client->dev, "vled");
@@ -670,7 +666,7 @@ static void max44005_shutdown(struct i2c_client *client)
 }
 
 static const struct i2c_device_id max44005_id[] = {
-	{"max44005-siio", 0},
+	{"max44005", 0},
 	{}
 };
 
@@ -678,8 +674,8 @@ MODULE_DEVICE_TABLE(i2c, max44005_id);
 
 #ifdef CONFIG_OF
 static const struct of_device_id max44005_of_match[] = {
-	{.compatible = "maxim,max44005-siio", },
-	{.compatible = "maxim,max44006-siio", },
+	{.compatible = "maxim,max44005", },
+	{.compatible = "maxim,max44006", },
 	{ },
 };
 MODULE_DEVICE_TABLE(of, max44005_of_match);
