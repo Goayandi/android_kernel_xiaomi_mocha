@@ -11,6 +11,8 @@ menuconfig INPUT_TOUCHSCREEN
 
 if INPUT_TOUCHSCREEN
 
+source "drivers/input/touchscreen/synaptics_dsx/Kconfig"
+
 config TOUCHSCREEN_LR388K7
 	tristate "Sharp LR388K7 touchscreen"
 	depends on SPI_MASTER
