@@ -2,6 +2,7 @@
  *  linux/fs/pipe.c
  *
  *  Copyright (C) 1991, 1992, 1999  Linus Torvalds
+ *  Copyright (C) 2016 XiaoMi, Inc.
  */
 
 #include <linux/mm.h>
@@ -230,52 +231,6 @@ static void anon_pipe_buf_release(struct pipe_inode_info *pipe,
 }
 
 /**
- * generic_pipe_buf_map - virtually map a pipe buffer
- * @pipe:	the pipe that the buffer belongs to
- * @buf:	the buffer that should be mapped
- * @atomic:	whether to use an atomic map
- *
- * Description:
- *	This function returns a kernel virtual address mapping for the
- *	pipe_buffer passed in @buf. If @atomic is set, an atomic map is provided
- *	and the caller has to be careful not to fault before calling
- *	the unmap function.
- *
- *	Note that this function calls kmap_atomic() if @atomic != 0.
- */
-void *generic_pipe_buf_map(struct pipe_inode_info *pipe,
-			   struct pipe_buffer *buf, int atomic)
-{
-	if (atomic) {
-		buf->flags |= PIPE_BUF_FLAG_ATOMIC;
-		return kmap_atomic(buf->page);
-	}
-
-	return kmap(buf->page);
-}
-EXPORT_SYMBOL(generic_pipe_buf_map);
-
-/**
- * generic_pipe_buf_unmap - unmap a previously mapped pipe buffer
- * @pipe:	the pipe that the buffer belongs to
- * @buf:	the buffer that should be unmapped
- * @map_data:	the data that the mapping function returned
- *
- * Description:
- *	This function undoes the mapping that ->map() provided.
- */
-void generic_pipe_buf_unmap(struct pipe_inode_info *pipe,
-			    struct pipe_buffer *buf, void *map_data)
-{
-	if (buf->flags & PIPE_BUF_FLAG_ATOMIC) {
-		buf->flags &= ~PIPE_BUF_FLAG_ATOMIC;
-		kunmap_atomic(map_data);
-	} else
-		kunmap(buf->page);
-}
-EXPORT_SYMBOL(generic_pipe_buf_unmap);
-
-/**
  * generic_pipe_buf_steal - attempt to take ownership of a &pipe_buffer
  * @pipe:	the pipe that the buffer belongs to
  * @buf:	the buffer to attempt to steal
@@ -355,8 +310,6 @@ EXPORT_SYMBOL(generic_pipe_buf_release);
 
 static const struct pipe_buf_operations anon_pipe_buf_ops = {
 	.can_merge = 1,
-	.map = generic_pipe_buf_map,
-	.unmap = generic_pipe_buf_unmap,
 	.confirm = generic_pipe_buf_confirm,
 	.release = anon_pipe_buf_release,
 	.steal = generic_pipe_buf_steal,
@@ -365,8 +318,6 @@ static const struct pipe_buf_operations anon_pipe_buf_ops = {
 
 static const struct pipe_buf_operations packet_pipe_buf_ops = {
 	.can_merge = 0,
-	.map = generic_pipe_buf_map,
-	.unmap = generic_pipe_buf_unmap,
 	.confirm = generic_pipe_buf_confirm,
 	.release = anon_pipe_buf_release,
 	.steal = generic_pipe_buf_steal,
@@ -401,7 +352,6 @@ pipe_read(struct kiocb *iocb, const struct iovec *_iov,
 			void *addr;
 			size_t chars = buf->len, remaining;
 			int error, atomic;
-			int offset;
 
 			if (chars > total_len)
 				chars = total_len;
@@ -415,12 +365,16 @@ pipe_read(struct kiocb *iocb, const struct iovec *_iov,
 
 			atomic = !iov_fault_in_pages_write(iov, chars);
 			remaining = chars;
-			offset = buf->offset;
 redo:
-			addr = ops->map(pipe, buf, atomic);
-			error = pipe_iov_copy_to_user(iov, addr, &offset,
-						      &remaining, atomic);
-			ops->unmap(pipe, buf, addr);
+			if (atomic)
+				addr = kmap_atomic(buf->page);
+			else
+				addr = kmap(buf->page);
+			error = pipe_iov_copy_to_user(iov, addr, &buf->offset, &remaining, atomic);
+			if (atomic)
+				kunmap_atomic(addr);
+			else
+				kunmap(buf->page);
 			if (unlikely(error)) {
 				/*
 				 * Just retry with the slow path if we failed.
@@ -434,7 +388,6 @@ redo:
 				break;
 			}
 			ret += chars;
-			buf->offset += chars;
 			buf->len -= chars;
 
 			/* Was it a packet buffer? Clean up and exit */
@@ -547,10 +500,16 @@ pipe_write(struct kiocb *iocb, const struct iovec *_iov,
 
 			iov_fault_in_pages_read(iov, chars);
 redo1:
-			addr = ops->map(pipe, buf, atomic);
+			if (atomic)
+				addr = kmap_atomic(buf->page);
+			else
+				addr = kmap(buf->page);
 			error = pipe_iov_copy_from_user(addr, &offset, iov,
 							&remaining, atomic);
-			ops->unmap(pipe, buf, addr);
+			if (atomic)
+				kunmap_atomic(addr);
+			else
+				kunmap(buf->page);
 			ret = error;
 			do_wakeup = 1;
 			if (error) {

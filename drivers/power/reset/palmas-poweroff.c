@@ -132,6 +132,11 @@ static void palmas_power_off(void *drv_data)
 	palmas_write(palmas, PALMAS_PMU_CONTROL_BASE,
 				PALMAS_SWOFF_COLDRST, 0x0);
 
+	palmas_update_bits(palmas, PALMAS_PMU_CONTROL_BASE,
+				PALMAS_LONG_PRESS_KEY,
+				PALMAS_LONG_PRESS_KEY_PWRON_DEBOUNCE_MASK,
+				PALMAS_LONG_PRESS_KEY_PWRON_DEBOUNCE_TIME_500MS);
+
 	dev_info(palmas_pm->dev, "Powering off the device\n");
 
 	/* Lock LONG PRESS KEY bits */

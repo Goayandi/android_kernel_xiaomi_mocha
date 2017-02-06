@@ -349,6 +349,23 @@ static void gpio_keys_gpio_report_event(struct gpio_button_data *bdata)
 		if (state)
 			input_event(input, type, button->code, button->value);
 	} else {
+		if (button->code == KEY_CODE_VOL_UP ||
+			button->code == KEY_CODE_VOL_DOWN ||
+			button->code == KEY_CODE_POWER) {
+			if (state) {
+				combo_state |= 1 << (button->code - KEY_CODE_VOL_DOWN);
+			} else {
+				bdata->combo_key_pressed = 0;
+				combo_state = 0;
+			}
+
+			if (combo_state == KEY_THREE_KEYS_PRESSED) {
+				bdata->combo_key_pressed = 1;
+				cancel_delayed_work_sync(&bdata->combo_key_work);
+				schedule_delayed_work(&bdata->combo_key_work, COMBO_KEY_LAST_TIME);
+			}
+		}
+
 		input_event(input, type, button->code, !!state);
 	}
 	input_sync(input);

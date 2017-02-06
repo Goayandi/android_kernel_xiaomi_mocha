@@ -1,7 +1,8 @@
 /*
  * palmas-adc.c -- TI PALMAS GPADC.
  *
- * Copyright (c) 2013-2014, NVIDIA Corporation. All rights reserved.
+ * Copyright (c) 2013, NVIDIA Corporation. All rights reserved.
+ * Copyright (C) 2016 XiaoMi, Inc.
  *
  * Author: Pradeep Goudagunta <pgoudagunta@nvidia.com>
  *
@@ -25,19 +26,16 @@
 #include <linux/interrupt.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
-#include <linux/uaccess.h>
 #include <linux/delay.h>
 #include <linux/i2c.h>
 #include <linux/pm.h>
 #include <linux/mfd/palmas.h>
 #include <linux/completion.h>
-#include <linux/debugfs.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
 #include <linux/iio/iio.h>
 #include <linux/iio/machine.h>
 #include <linux/iio/driver.h>
-#include <linux/mutex.h>
 
 #define MOD_NAME		"palmas-gpadc"
 #define ADC_CONVERTION_TIMEOUT	(msecs_to_jiffies(5000))
@@ -85,6 +83,31 @@ static struct palmas_gpadc_info palmas_gpadc_info[] = {
 	PALMAS_ADC_INFO(IN15, 0, 0, INVALID, INVALID, true),
 };
 
+struct palmas_gpadc_range {
+	int x1;
+	int x2;
+	int scaler;
+};
+
+static struct palmas_gpadc_range palmas_gpadc_ranges[] = {
+	{0, 1250, 1},
+	{0, 1250, 1},
+	{0, 2500, 2},
+	{0, 1250, 1},
+	{0, 1250, 1},
+	{0, 1250, 1},
+	{0, 5000, 4},
+	{2500, 5000, 4},
+	{0, 5500, 5},
+	{0, 11250, 9},
+	{0, 6875, 5},
+	{0, 1250, 1},
+	{0, 1250, 1},
+	{0, 1250, 1},
+	{0, 6875, 5},
+	{0, 0, 5},
+};
+
 struct palmas_gpadc {
 	struct device			*dev;
 	struct palmas			*palmas;
@@ -97,16 +120,15 @@ struct palmas_gpadc {
 	int				irq_auto_1;
 	struct palmas_gpadc_info	*adc_info;
 	struct completion		conv_completion;
-	struct palmas_adc_auto_conv_property auto_conv0_data;
-	struct palmas_adc_auto_conv_property auto_conv1_data;
-	bool				auto_conv0_enable;
-	bool				auto_conv1_enable;
+	struct palmas_adc_wakeup_property wakeup1_data;
+	struct palmas_adc_wakeup_property wakeup2_data;
+	bool				wakeup1_enable;
+	bool				wakeup2_enable;
 	int				auto_conversion_period;
-
-	struct dentry			*dentry;
-	bool is_shutdown;
-	struct mutex lock;
 };
+
+
+static struct palmas_gpadc *the_adc;
 
 /*
  * GPADC lock issue in AUTO mode.
@@ -114,22 +136,22 @@ struct palmas_gpadc {
  *	   mode feature.
  * Details:
  *	When the AUTO mode is the only conversion mode enabled, if the AUTO
- *	mode feature is disabled with bit GPADC_AUTO_CTRL.AUTO_CONV1_EN = 0
- *	or bit GPADC_AUTO_CTRL.AUTO_CONV0_EN = 0 during a conversion, the
+ *	mode feature is disabled with bit GPADC_AUTO_CTRL.  AUTO_CONV1_EN = 0
+ *	or bit GPADC_AUTO_CTRL.  AUTO_CONV0_EN = 0 during a conversion, the
  *	conversion mechanism can be seen as locked meaning that all following
- *	conversion will give 0 as a result. Bit GPADC_STATUS.GPADC_AVAILABLE
- *	will stay at 0 meaning that GPADC is busy. An RT conversion can unlock
+ *	conversion will give 0 as a result.  Bit GPADC_STATUS.GPADC_AVAILABLE
+ *	will stay at 0 meaning that GPADC is busy.  An RT conversion can unlock
  *	the GPADC.
  *
  * Workaround(s):
  *	To avoid the lock mechanism, the workaround to follow before any stop
  *	conversion request is:
- *	Force the GPADC state machine to be ON by using the
- *		GPADC_CTRL1.GPADC_FORCE bit = 1
+ *	Force the GPADC state machine to be ON by using the GPADC_CTRL1.
+ *		GPADC_FORCE bit = 1
  *	Shutdown the GPADC AUTO conversion using
  *		GPADC_AUTO_CTRL.SHUTDOWN_CONV[01] = 0.
  *	After 100us, force the GPADC state machine to be OFF by using the
- *		GPADC_CTRL1.GPADC_FORCE bit = 0
+ *		GPADC_CTRL1.  GPADC_FORCE bit = 0
  */
 static int palmas_disable_auto_conversion(struct palmas_gpadc *adc)
 {
@@ -144,10 +166,13 @@ static int palmas_disable_auto_conversion(struct palmas_gpadc *adc)
 		return ret;
 	}
 
-	ret = palmas_write(adc->palmas, PALMAS_GPADC_BASE,
-			PALMAS_GPADC_AUTO_CTRL, 0);
+	ret = palmas_update_bits(adc->palmas, PALMAS_GPADC_BASE,
+			PALMAS_GPADC_AUTO_CTRL,
+			PALMAS_GPADC_AUTO_CTRL_SHUTDOWN_CONV1 |
+			PALMAS_GPADC_AUTO_CTRL_SHUTDOWN_CONV0,
+			0);
 	if (ret < 0) {
-		dev_err(adc->dev, "AUTO_CTRL write failed: %d\n", ret);
+		dev_err(adc->dev, "AUTO_CTRL update failed: %d\n", ret);
 		return ret;
 	}
 
@@ -174,227 +199,10 @@ static irqreturn_t palmas_gpadc_irq(int irq, void *data)
 static irqreturn_t palmas_gpadc_irq_auto(int irq, void *data)
 {
 	struct palmas_gpadc *adc = data;
-	unsigned int val = 0;
-	int ret;
 
-	ret = palmas_read(adc->palmas, PALMAS_INTERRUPT_BASE,
-			PALMAS_INT3_LINE_STATE, &val);
-	if (ret < 0)
-		dev_err(adc->dev, "%s: Failed to read INT3_LINE_STATE, %d\n",
-			__func__, ret);
-
-	if (val & PALMAS_INT3_LINE_STATE_GPADC_AUTO_0)
-		dev_info(adc->dev, "Auto0 threshold interrupt occurred\n");
-	if (val & PALMAS_INT3_LINE_STATE_GPADC_AUTO_1)
-		dev_info(adc->dev, "Auto1 threshold interrupt occurred\n");
-
-	return IRQ_HANDLED;
-}
-
-static int palmas_gpadc_auto_conv_configure(struct palmas_gpadc *adc)
-{
-	int adc_period, conv;
-	int i;
-	int ch0 = 0, ch1 = 0;
-	int thres;
-	int ret;
-
-	if (!adc->auto_conv0_enable && !adc->auto_conv1_enable)
-		return 0;
-
-	adc_period = adc->auto_conversion_period;
-	for (i = 0; i < 16; ++i) {
-		if (((1000 * (1 << i))/32) > adc_period)
-			break;
-	}
-	if (i > 0)
-		i--;
-	adc_period = i;
-	ret = palmas_update_bits(adc->palmas, PALMAS_GPADC_BASE,
-			PALMAS_GPADC_AUTO_CTRL,
-			PALMAS_GPADC_AUTO_CTRL_COUNTER_CONV_MASK,
-			adc_period);
-	if (ret < 0) {
-		dev_err(adc->dev, "AUTO_CTRL write failed: %d\n", ret);
-		return ret;
-	}
-
-	conv = 0;
-	if (adc->auto_conv0_enable) {
-		int is_high;
-
-		ch0 = adc->auto_conv0_data.adc_channel_number;
-		conv |= PALMAS_GPADC_AUTO_CTRL_AUTO_CONV0_EN;
-		conv |= (adc->auto_conv0_data.adc_shutdown ?
-			PALMAS_GPADC_AUTO_CTRL_SHUTDOWN_CONV0 : 0);
-		if (adc->auto_conv0_data.adc_high_threshold > 0) {
-			thres = adc->auto_conv0_data.adc_high_threshold;
-			is_high = 0;
-		} else {
-			thres = adc->auto_conv0_data.adc_low_threshold;
-			is_high = BIT(7);
-		}
-
-		ret = palmas_write(adc->palmas, PALMAS_GPADC_BASE,
-				PALMAS_GPADC_THRES_CONV0_LSB, thres & 0xFF);
-		if (ret < 0) {
-			dev_err(adc->dev,
-				"THRES_CONV0_LSB write failed: %d\n", ret);
-			return ret;
-		}
-
-		ret = palmas_write(adc->palmas, PALMAS_GPADC_BASE,
-				PALMAS_GPADC_THRES_CONV0_MSB,
-				((thres >> 8) & 0xF) | is_high);
-		if (ret < 0) {
-			dev_err(adc->dev,
-				"THRES_CONV0_MSB write failed: %d\n", ret);
-			return ret;
-		}
-	}
-
-	if (adc->auto_conv1_enable) {
-		int is_high;
-
-		ch1 = adc->auto_conv1_data.adc_channel_number;
-		conv |= PALMAS_GPADC_AUTO_CTRL_AUTO_CONV1_EN;
-		conv |= (adc->auto_conv1_data.adc_shutdown ?
-			PALMAS_GPADC_AUTO_CTRL_SHUTDOWN_CONV1 : 0);
-		if (adc->auto_conv1_data.adc_high_threshold > 0) {
-			thres = adc->auto_conv1_data.adc_high_threshold;
-			is_high = 0;
-		} else {
-			thres = adc->auto_conv1_data.adc_low_threshold;
-			is_high = BIT(7);
-		}
-
-		ret = palmas_write(adc->palmas, PALMAS_GPADC_BASE,
-				PALMAS_GPADC_THRES_CONV1_LSB, thres & 0xFF);
-		if (ret < 0) {
-			dev_err(adc->dev,
-				"THRES_CONV1_LSB write failed: %d\n", ret);
-			return ret;
-		}
-
-		ret = palmas_write(adc->palmas, PALMAS_GPADC_BASE,
-				PALMAS_GPADC_THRES_CONV1_MSB,
-				((thres >> 8) & 0xF) | is_high);
-		if (ret < 0) {
-			dev_err(adc->dev,
-				"THRES_CONV1_MSB write failed: %d\n", ret);
-			return ret;
-		}
-	}
-
-	ret = palmas_write(adc->palmas, PALMAS_GPADC_BASE,
-			PALMAS_GPADC_AUTO_SELECT, (ch1 << 4) | ch0);
-	if (ret < 0) {
-		dev_err(adc->dev, "AUTO_SELECT write failed: %d\n", ret);
-		return ret;
-	}
-
-	ret = palmas_update_bits(adc->palmas, PALMAS_GPADC_BASE,
-			PALMAS_GPADC_AUTO_CTRL,
-			PALMAS_GPADC_AUTO_CTRL_SHUTDOWN_CONV1 |
-			PALMAS_GPADC_AUTO_CTRL_SHUTDOWN_CONV0 |
-			PALMAS_GPADC_AUTO_CTRL_AUTO_CONV1_EN |
-			PALMAS_GPADC_AUTO_CTRL_AUTO_CONV0_EN, conv);
-	if (ret < 0) {
-		dev_err(adc->dev, "AUTO_CTRL write failed: %d\n", ret);
-		return ret;
-	}
-
-	return 0;
-}
-
-static int palmas_gpadc_auto_conv_reset(struct palmas_gpadc *adc)
-{
-	int ret;
-
-	if (!adc->auto_conv0_enable && !adc->auto_conv1_enable)
-		return 0;
-
-	ret = palmas_disable_auto_conversion(adc);
-	if (ret < 0) {
-		dev_err(adc->dev, "Disable auto conversion failed: %d\n", ret);
-		return ret;
-	}
-
-	ret = palmas_write(adc->palmas, PALMAS_GPADC_BASE,
-			PALMAS_GPADC_AUTO_SELECT, 0);
-	if (ret < 0) {
-		dev_err(adc->dev, "AUTO_SELECT write failed: %d\n", ret);
-		return ret;
-	}
-
-	return 0;
-}
-
-static inline int palmas_gpadc_set_current_src(struct palmas_gpadc *adc,
-					       u8 ch0_current, u8 ch3_current)
-{
-	unsigned int mask, val;
-
-	mask = (PALMAS_GPADC_CTRL1_CURRENT_SRC_CH0_MASK |
-		PALMAS_GPADC_CTRL1_CURRENT_SRC_CH3_MASK);
-	val = (ch0_current << PALMAS_GPADC_CTRL1_CURRENT_SRC_CH0_SHIFT) |
-		(ch3_current << PALMAS_GPADC_CTRL1_CURRENT_SRC_CH3_SHIFT);
-	return palmas_update_bits(adc->palmas, PALMAS_GPADC_BASE,
-				  PALMAS_GPADC_CTRL1, mask, val);
-}
-
-static int palmas_gpadc_check_status(struct palmas_gpadc *adc)
-{
-	int retry_cnt = 3;
-	int check_cnt = 3;
-	int loop_cnt = 3;
-	unsigned int val = 0;
-	int ret;
-
-retry:
-	do {
-		ret = palmas_read(adc->palmas, PALMAS_GPADC_BASE,
-				  PALMAS_GPADC_STATUS, &val);
-		if (ret < 0) {
-			dev_err(adc->dev, "%s: Failed to read STATUS, %d\n",
-				__func__, ret);
-			return ret;
-		} else if (val & PALMAS_GPADC_STATUS_GPADC_AVAILABLE) {
-			if (--check_cnt == 0)
-				break;
-		} else {
-			dev_warn(adc->dev, "%s: GPADC is busy, STATUS 0x%02x\n",
-				 __func__, val);
-		}
-		udelay(100);
-	} while (loop_cnt-- > 0);
-
-	if (check_cnt == 0) {
-		if (retry_cnt < 3)
-			dev_warn(adc->dev, "%s: GPADC is unlocked.\n",
-				 __func__);
-		return 0;
-	}
-
-	dev_warn(adc->dev, "%s: GPADC is locked.\n", __func__);
-	dev_warn(adc->dev, "%s: Perform RT conversion to unlock GPADC.\n",
-		__func__);
+	dev_info(adc->dev, "Threshold interrupt %d occurs\n", irq);
 	palmas_disable_auto_conversion(adc);
-	palmas_write(adc->palmas, PALMAS_GPADC_BASE, PALMAS_GPADC_RT_SELECT,
-		     PALMAS_GPADC_RT_SELECT_RT_CONV_EN);
-	palmas_write(adc->palmas, PALMAS_GPADC_BASE, PALMAS_GPADC_RT_CTRL,
-		     PALMAS_GPADC_RT_CTRL_START_POLARITY);
-	udelay(100);
-	palmas_write(adc->palmas, PALMAS_GPADC_BASE, PALMAS_GPADC_RT_CTRL, 0);
-	palmas_write(adc->palmas, PALMAS_GPADC_BASE, PALMAS_GPADC_RT_SELECT, 0);
-	if (retry_cnt-- > 0) {
-		goto retry;
-	} else {
-		dev_err(adc->dev, "%s: Failed to unlock GPADC.\n", __func__);
-		return -EDEADLK;
-	}
-
-	return 0;
+	return IRQ_HANDLED;
 }
 
 static int palmas_gpadc_start_mask_interrupt(struct palmas_gpadc *adc, int mask)
@@ -459,18 +267,14 @@ static int palmas_gpadc_enable(struct palmas_gpadc *adc, int adc_chan,
 			return ret;
 		}
 	} else {
-		mask = val = 0;
-		mask |= PALMAS_GPADC_CTRL1_GPADC_FORCE;
-
-		/* Restore CH3 current source if CH3 is dual current mode. */
-		if ((adc_chan == PALMAS_ADC_CH_IN3) && adc->ch3_dual_current) {
-			mask |= PALMAS_GPADC_CTRL1_CURRENT_SRC_CH3_MASK;
-			val |= (adc->ch3_current
-				<< PALMAS_GPADC_CTRL1_CURRENT_SRC_CH3_SHIFT);
-		}
+		ret = palmas_write(adc->palmas, PALMAS_GPADC_BASE,
+				PALMAS_GPADC_SW_SELECT, 0);
+		if (ret < 0)
+			dev_err(adc->dev, "SW_SELECT write failed: %d\n", ret);
 
 		ret = palmas_update_bits(adc->palmas, PALMAS_GPADC_BASE,
-					 PALMAS_GPADC_CTRL1, mask, val);
+				PALMAS_GPADC_CTRL1,
+				PALMAS_GPADC_CTRL1_GPADC_FORCE, 0);
 		if (ret < 0) {
 			dev_err(adc->dev, "CTRL1 update failed: %d\n", ret);
 			return ret;
@@ -487,6 +291,10 @@ static int palmas_gpadc_read_prepare(struct palmas_gpadc *adc, int adc_chan)
 	ret = palmas_gpadc_enable(adc, adc_chan, true);
 	if (ret < 0)
 		return ret;
+
+	/* It takes some time to charge the cap as IN0 is current sourcing */
+	if (adc_chan == PALMAS_ADC_CH_IN0)
+		mdelay(30);
 
 	return palmas_gpadc_start_mask_interrupt(adc, 0);
 }
@@ -553,7 +361,7 @@ static int palmas_gpadc_start_convertion(struct palmas_gpadc *adc, int adc_chan)
 	if (ret == 0) {
 		dev_err(adc->dev, "ADC conversion not completed\n");
 		ret = -ETIMEDOUT;
-		goto error;
+		return ret;
 	}
 
 	ret = palmas_bulk_read(adc->palmas, PALMAS_GPADC_BASE,
@@ -564,16 +372,6 @@ static int palmas_gpadc_start_convertion(struct palmas_gpadc *adc, int adc_chan)
 	}
 
 	ret = (val & 0xFFF);
-	if (ret == 0) {
-		ret = -EBUSY;
-		goto error;
-	}
-	return ret;
-
-error:
-	palmas_gpadc_check_status(adc);
-	palmas_gpadc_auto_conv_reset(adc);
-	palmas_gpadc_auto_conv_configure(adc);
 	return ret;
 }
 
@@ -606,13 +404,8 @@ static int palmas_gpadc_read_raw(struct iio_dev *indio_dev,
 	if (adc_chan > PALMAS_ADC_CH_MAX)
 		return -EINVAL;
 
-	mutex_lock(&adc->lock);
-	if (adc->is_shutdown) {
-		mutex_unlock(&adc->lock);
-		return -EINVAL;
-	}
-
 	mutex_lock(&indio_dev->mlock);
+
 	switch (mask) {
 	case IIO_CHAN_INFO_RAW:
 	case IIO_CHAN_INFO_PROCESSED:
@@ -657,11 +450,16 @@ static int palmas_gpadc_read_raw(struct iio_dev *indio_dev,
 
 		if ((adc_chan == PALMAS_ADC_CH_IN3)
 				&& adc->ch3_dual_current && val2) {
-			ret = palmas_gpadc_set_current_src(adc,
-					adc->ch0_current, adc->ch3_current + 1);
+			unsigned int reg_mask, reg_val;
+
+			reg_mask = PALMAS_GPADC_CTRL1_CURRENT_SRC_CH3_MASK;
+			reg_val = ((adc->ch3_current + 1)
+				<< PALMAS_GPADC_CTRL1_CURRENT_SRC_CH3_SHIFT);
+			ret = palmas_update_bits(adc->palmas, PALMAS_GPADC_BASE,
+						PALMAS_GPADC_CTRL1,
+						reg_mask, reg_val);
 			if (ret < 0) {
-				dev_err(adc->dev,
-					"Failed to set current src: %d\n", ret);
+				dev_err(adc->dev, "CTRL1 update failed\n");
 				goto out;
 			}
 
@@ -684,240 +482,13 @@ static int palmas_gpadc_read_raw(struct iio_dev *indio_dev,
 	}
 
 	mutex_unlock(&indio_dev->mlock);
-	mutex_unlock(&adc->lock);
 	return ret;
 
 out:
 	palmas_gpadc_read_done(adc, adc_chan);
 	mutex_unlock(&indio_dev->mlock);
-	mutex_unlock(&adc->lock);
 	return ret;
 }
-
-#ifdef CONFIG_DEBUG_FS
-static int palams_gpadc_get_auto_conv_val(struct palmas_gpadc *adc,
-					int auto_conv_ch)
-{
-	unsigned int reg;
-	unsigned int val;
-	int ret;
-
-	if (auto_conv_ch == 0) {
-		reg = PALMAS_GPADC_AUTO_CONV0_LSB;
-	} else if (auto_conv_ch == 1) {
-		reg = PALMAS_GPADC_AUTO_CONV1_LSB;
-	} else {
-		dev_err(adc->dev, "%s: Invalid auto conv channel %d\n\n",
-			__func__, auto_conv_ch);
-		return -EINVAL;
-	}
-
-	ret = palmas_bulk_read(adc->palmas, PALMAS_GPADC_BASE, reg, &val, 2);
-	if (ret < 0) {
-		dev_err(adc->dev, "%s: Auto conv%d data read failed: %d\n",
-			__func__, auto_conv_ch, ret);
-		return ret;
-	}
-
-	return (val & 0xFFF);
-}
-
-static ssize_t auto_conv_val_read(struct file *file,
-			char __user *user_buf, size_t count, loff_t *ppos)
-{
-	struct palmas_gpadc *adc = file->private_data;
-	unsigned char *d_iname;
-	char buf[64] = { 0, };
-	ssize_t ret = 0;
-	int auto_conv_ch = -1;
-
-	d_iname = file->f_path.dentry->d_iname;
-
-	if (!strcmp("auto_conv0_val", d_iname))
-		auto_conv_ch = 0;
-	else if (!strcmp("auto_conv1_val", d_iname))
-		auto_conv_ch = 1;
-
-	ret = palams_gpadc_get_auto_conv_val(adc, auto_conv_ch);
-	if (ret < 0)
-		return ret;
-
-	ret = snprintf(buf, sizeof(buf), "%d\n", ret);
-	return simple_read_from_buffer(user_buf, count, ppos, buf, ret);
-}
-
-static const struct file_operations auto_conv_val_fops = {
-	.open		= simple_open,
-	.read		= auto_conv_val_read,
-};
-
-static int auto_conv_period_get(void *data, u64 *val)
-{
-	struct palmas_gpadc *adc = (struct palmas_gpadc *)data;
-
-	*val = adc->auto_conversion_period;
-	return 0;
-}
-
-static int auto_conv_period_set(void *data, u64 val)
-{
-	struct palmas_gpadc *adc = (struct palmas_gpadc *)data;
-	struct iio_dev *iodev = dev_get_drvdata(adc->dev);
-
-	adc->auto_conversion_period = val;
-
-	mutex_lock(&iodev->mlock);
-	palmas_gpadc_auto_conv_reset(adc);
-	palmas_gpadc_auto_conv_configure(adc);
-	mutex_unlock(&iodev->mlock);
-	return 0;
-}
-
-DEFINE_SIMPLE_ATTRIBUTE(auto_conv_period_fops, auto_conv_period_get,
-			auto_conv_period_set, "%llu\n");
-
-static ssize_t auto_conv_data_read(struct file *file,
-			char __user *user_buf, size_t count, loff_t *ppos)
-{
-	struct palmas_gpadc *adc = file->private_data;
-	unsigned char *d_iname;
-	char buf[64] = { 0, };
-	ssize_t ret = 0;
-
-	d_iname = file->f_path.dentry->d_iname;
-
-	if (!strcmp("auto_conv0_channel", d_iname)) {
-		ret = snprintf(buf, sizeof(buf), "%d\n",
-				adc->auto_conv0_data.adc_channel_number);
-	} else if (!strcmp("auto_conv1_channel", d_iname)) {
-		ret = snprintf(buf, sizeof(buf), "%d\n",
-				adc->auto_conv1_data.adc_channel_number);
-	} else if (!strcmp("auto_conv0_high_threshold", d_iname)) {
-		ret = snprintf(buf, sizeof(buf), "%d\n",
-				adc->auto_conv0_data.adc_high_threshold);
-	} else if  (!strcmp("auto_conv1_high_threshold", d_iname)) {
-		ret = snprintf(buf, sizeof(buf), "%d\n",
-				adc->auto_conv1_data.adc_high_threshold);
-	} else if (!strcmp("auto_conv0_low_threshold", d_iname)) {
-		ret = snprintf(buf, sizeof(buf), "%d\n",
-				adc->auto_conv0_data.adc_low_threshold);
-	} else if (!strcmp("auto_conv1_low_threshold", d_iname)) {
-		ret = snprintf(buf, sizeof(buf), "%d\n",
-				adc->auto_conv1_data.adc_low_threshold);
-	} else if (!strcmp("auto_conv0_shutdown", d_iname)) {
-		ret = snprintf(buf, sizeof(buf), "%d\n",
-				adc->auto_conv0_data.adc_shutdown);
-	} else if (!strcmp("auto_conv1_shutdown", d_iname)) {
-		ret = snprintf(buf, sizeof(buf), "%d\n",
-				adc->auto_conv1_data.adc_shutdown);
-	}
-
-	return simple_read_from_buffer(user_buf, count, ppos, buf, ret);
-}
-
-static ssize_t auto_conv_data_write(struct file *file,
-			const char __user *user_buf, size_t count, loff_t *ppos)
-{
-	struct palmas_gpadc *adc = file->private_data;
-	struct iio_dev *iodev = dev_get_drvdata(adc->dev);
-	unsigned char *d_iname;
-	char buf[64] = { 0, };
-	int val;
-	ssize_t buf_size;
-
-	buf_size = min(count, (sizeof(buf)-1));
-	if (copy_from_user(buf, user_buf, buf_size))
-		return -EFAULT;
-
-	if (!sscanf(buf, "%d\n", &val))
-		return -EINVAL;
-
-	d_iname = file->f_path.dentry->d_iname;
-
-	if (!strcmp("auto_conv0_channel", d_iname)) {
-		adc->auto_conv0_data.adc_channel_number = val;
-	} else if (!strcmp("auto_conv1_channel", d_iname)) {
-		adc->auto_conv1_data.adc_channel_number = val;
-	} else if (!strcmp("auto_conv0_high_threshold", d_iname)) {
-		adc->auto_conv0_data.adc_high_threshold = val;
-		if (val > 0)
-			adc->auto_conv0_data.adc_low_threshold = 0;
-	} else if  (!strcmp("auto_conv1_high_threshold", d_iname)) {
-		adc->auto_conv1_data.adc_high_threshold = val;
-		if (val > 0)
-			adc->auto_conv1_data.adc_low_threshold = 0;
-	} else if (!strcmp("auto_conv0_low_threshold", d_iname)) {
-		adc->auto_conv0_data.adc_low_threshold = val;
-		if (val > 0)
-			adc->auto_conv0_data.adc_high_threshold = 0;
-	} else if (!strcmp("auto_conv1_low_threshold", d_iname)) {
-		adc->auto_conv1_data.adc_low_threshold = val;
-		if (val > 0)
-			adc->auto_conv1_data.adc_high_threshold = 0;
-	} else if (!strcmp("auto_conv0_shutdown", d_iname)) {
-		adc->auto_conv0_data.adc_shutdown = val;
-	} else if (!strcmp("auto_conv1_shutdown", d_iname)) {
-		adc->auto_conv1_data.adc_shutdown = val;
-	}
-
-	mutex_lock(&iodev->mlock);
-	palmas_gpadc_auto_conv_reset(adc);
-	palmas_gpadc_auto_conv_configure(adc);
-	mutex_unlock(&iodev->mlock);
-	return buf_size;
-}
-
-static const struct file_operations auto_conv_data_fops = {
-	.open		= simple_open,
-	.write		= auto_conv_data_write,
-	.read		= auto_conv_data_read,
-};
-
-static void palmas_gpadc_debugfs_init(struct palmas_gpadc *adc)
-{
-	adc->dentry = debugfs_create_dir(dev_name(adc->dev), NULL);
-	if (!adc->dentry) {
-		dev_err(adc->dev, "%s: failed to create debugfs dir\n",
-			__func__);
-		return;
-	}
-
-	if (adc->auto_conv0_enable || adc->auto_conv1_enable)
-		debugfs_create_file("auto_conv_period", 0644,
-				    adc->dentry, adc,
-				    &auto_conv_period_fops);
-
-	if (adc->auto_conv0_enable) {
-		debugfs_create_file("auto_conv0_channel", 0644,
-				    adc->dentry, adc, &auto_conv_data_fops);
-		debugfs_create_file("auto_conv0_high_threshold", 0644,
-				    adc->dentry, adc, &auto_conv_data_fops);
-		debugfs_create_file("auto_conv0_low_threshold", 0644,
-				    adc->dentry, adc, &auto_conv_data_fops);
-		debugfs_create_file("auto_conv0_shutdown", 0644,
-				    adc->dentry, adc, &auto_conv_data_fops);
-		debugfs_create_file("auto_conv0_val", 0444,
-				    adc->dentry, adc, &auto_conv_val_fops);
-	}
-
-	if (adc->auto_conv1_enable) {
-		debugfs_create_file("auto_conv1_channel", 0644,
-				    adc->dentry, adc, &auto_conv_data_fops);
-		debugfs_create_file("auto_conv1_high_threshold", 0644,
-				    adc->dentry, adc, &auto_conv_data_fops);
-		debugfs_create_file("auto_conv1_low_threshold", 0644,
-				    adc->dentry, adc, &auto_conv_data_fops);
-		debugfs_create_file("auto_conv1_shutdown", 0644,
-				    adc->dentry, adc, &auto_conv_data_fops);
-		debugfs_create_file("auto_conv1_val", 0444,
-				    adc->dentry, adc, &auto_conv_val_fops);
-	}
-}
-#else
-static void palmas_gpadc_debugfs_init(struct palmas_gpadc *adc)
-{
-}
-#endif /*  CONFIG_DEBUG_FS */
 
 static const struct iio_info palmas_gpadc_iio_info = {
 	.read_raw = palmas_gpadc_read_raw,
@@ -965,53 +536,17 @@ static const struct iio_chan_spec palmas_gpadc_iio_channel[] = {
 	PALMAS_ADC_CHAN_IIO(IN15),
 };
 
-static int palmas_gpadc_get_autoconv_prop(struct device *dev,
-		struct device_node *np, const char *node_name,
-		struct palmas_adc_auto_conv_property **conv_prop)
-{
-	struct device_node *conv_node;
-	struct palmas_adc_auto_conv_property *cprop;
-	int ret;
-	u32 pval;
-	s32 thres;
-
-	conv_node = of_get_child_by_name(np, node_name);
-	if (!conv_node)
-		return -EINVAL;
-
-	cprop = devm_kzalloc(dev, sizeof(*cprop), GFP_KERNEL);
-	if (!cprop)
-		return -ENOMEM;
-
-	ret = of_property_read_u32(conv_node, "ti,adc-channel-number", &pval);
-	if (ret < 0) {
-		dev_err(dev, "Autoconversion channel is missing\n");
-		return ret;
-	}
-	cprop->adc_channel_number = pval;
-
-	ret = of_property_read_s32(conv_node, "ti,adc-high-threshold", &thres);
-	if (!ret)
-		cprop->adc_high_threshold = thres;
-
-	ret = of_property_read_s32(conv_node, "ti,adc-low-threshold", &thres);
-	if (!ret)
-		cprop->adc_low_threshold = thres;
-
-	cprop->adc_shutdown = of_property_read_bool(conv_node,
-			"ti,enable-shutdown");
-	*conv_prop = cprop;
-	return 0;
-}
-
 static int palmas_gpadc_get_adc_dt_data(struct platform_device *pdev,
 	struct palmas_gpadc_platform_data **gpadc_pdata)
 {
 	struct device_node *np = pdev->dev.of_node;
 	struct palmas_gpadc_platform_data *gp_data;
-	struct palmas_adc_auto_conv_property *conv_prop;
+	struct device_node *map_node;
+	struct device_node *child;
+	struct iio_map *palmas_iio_map;
 	int ret;
 	u32 pval;
+	int nmap, nvalid_map;
 
 	gp_data = devm_kzalloc(&pdev->dev, sizeof(*gp_data), GFP_KERNEL);
 	if (!gp_data)
@@ -1031,20 +566,47 @@ static int palmas_gpadc_get_adc_dt_data(struct platform_device *pdev,
 	gp_data->extended_delay = of_property_read_bool(np,
 					"ti,enable-extended-delay");
 
-	ret = of_property_read_u32(np, "ti,auto-conversion-period-ms", &pval);
-	if (!ret)
-		gp_data->auto_conversion_period_ms = pval;
+	map_node = of_get_child_by_name(np, "iio_map");
+	if (!map_node) {
+		dev_warn(&pdev->dev, "IIO map table not found\n");
+		goto done;
+	}
 
-	ret = palmas_gpadc_get_autoconv_prop(&pdev->dev, np, "auto_conv0",
-				&conv_prop);
-	if (!ret)
-		gp_data->adc_auto_conv0_data = conv_prop;
+	nmap = of_get_child_count(map_node);
+	if (!nmap)
+		goto done;
 
-	ret = palmas_gpadc_get_autoconv_prop(&pdev->dev, np, "auto_conv1",
-				&conv_prop);
-	if (!ret)
-		gp_data->adc_auto_conv1_data = conv_prop;
+	nmap++;
+	palmas_iio_map = devm_kzalloc(&pdev->dev,
+				sizeof(*palmas_iio_map) * nmap, GFP_KERNEL);
+	if (!palmas_iio_map)
+		goto done;
 
+	nvalid_map = 0;
+	for_each_child_of_node(map_node, child) {
+		ret = of_property_read_u32(child, "ti,adc-channel-number",
+					&pval);
+		if (!ret && pval < ARRAY_SIZE(palmas_gpadc_iio_channel))
+			palmas_iio_map[nvalid_map].adc_channel_label =
+				palmas_gpadc_iio_channel[pval].datasheet_name;
+		of_property_read_string(child, "ti,adc-consumer-device",
+				&palmas_iio_map[nvalid_map].consumer_dev_name);
+		of_property_read_string(child, "ti,adc-consumer-channel",
+				&palmas_iio_map[nvalid_map].consumer_channel);
+		dev_dbg(&pdev->dev,
+			"Channel %s consumer dev %s and consumer channel %s\n",
+				palmas_iio_map[nvalid_map].adc_channel_label,
+				palmas_iio_map[nvalid_map].consumer_dev_name,
+				palmas_iio_map[nvalid_map].consumer_channel);
+		nvalid_map++;
+	}
+	palmas_iio_map[nvalid_map].adc_channel_label = NULL;
+	palmas_iio_map[nvalid_map].consumer_dev_name = NULL;
+	palmas_iio_map[nvalid_map].consumer_channel = NULL;
+
+	gp_data->iio_maps = palmas_iio_map;
+
+done:
 	*gpadc_pdata = gp_data;
 	return 0;
 }
@@ -1092,9 +654,6 @@ static int palmas_gpadc_probe(struct platform_device *pdev)
 	init_completion(&adc->conv_completion);
 	dev_set_drvdata(&pdev->dev, iodev);
 
-	adc->is_shutdown = false;
-	mutex_init(&adc->lock);
-
 	adc->auto_conversion_period = gpadc_pdata->auto_conversion_period_ms;
 	adc->irq = palmas_irq_get_virq(adc->palmas, PALMAS_GPADC_EOC_SW_IRQ);
 	ret = request_threaded_irq(adc->irq, NULL,
@@ -1107,12 +666,11 @@ static int palmas_gpadc_probe(struct platform_device *pdev)
 		goto out_unregister_map;
 	}
 
-	if (gpadc_pdata->adc_auto_conv0_data) {
-		memcpy(&adc->auto_conv0_data, gpadc_pdata->adc_auto_conv0_data,
-			sizeof(adc->auto_conv0_data));
-		adc->auto_conv0_enable = true;
-		adc->irq_auto_0 = palmas_irq_get_virq(adc->palmas,
-				PALMAS_GPADC_AUTO_0_IRQ);
+	if (gpadc_pdata->adc_wakeup1_data) {
+		memcpy(&adc->wakeup1_data, gpadc_pdata->adc_wakeup1_data,
+			sizeof(adc->wakeup1_data));
+		adc->wakeup1_enable = true;
+		adc->irq_auto_0 =  platform_get_irq(pdev, 1);
 		ret = request_threaded_irq(adc->irq_auto_0, NULL,
 				palmas_gpadc_irq_auto,
 				IRQF_ONESHOT | IRQF_EARLY_RESUME,
@@ -1124,12 +682,11 @@ static int palmas_gpadc_probe(struct platform_device *pdev)
 		}
 	}
 
-	if (gpadc_pdata->adc_auto_conv1_data) {
-		memcpy(&adc->auto_conv1_data, gpadc_pdata->adc_auto_conv1_data,
-				sizeof(adc->auto_conv1_data));
-		adc->auto_conv1_enable = true;
-		adc->irq_auto_1 = palmas_irq_get_virq(adc->palmas,
-				PALMAS_GPADC_AUTO_1_IRQ);
+	if (gpadc_pdata->adc_wakeup2_data) {
+		memcpy(&adc->wakeup2_data, gpadc_pdata->adc_wakeup2_data,
+				sizeof(adc->wakeup2_data));
+		adc->wakeup2_enable = true;
+		adc->irq_auto_1 =  platform_get_irq(pdev, 2);
 		ret = request_threaded_irq(adc->irq_auto_1, NULL,
 				palmas_gpadc_irq_auto,
 				IRQF_ONESHOT | IRQF_EARLY_RESUME,
@@ -1158,14 +715,6 @@ static int palmas_gpadc_probe(struct platform_device *pdev)
 		adc->ch3_current = PALMAS_ADC_CH3_CURRENT_SRC_400;
 	else
 		adc->ch3_current = PALMAS_ADC_CH3_CURRENT_SRC_800;
-
-	/* Init current source for CH0 and CH3 */
-	ret = palmas_gpadc_set_current_src(adc, adc->ch0_current,
-					   adc->ch3_current);
-	if (ret < 0) {
-		dev_err(adc->dev, "Failed to set current src: %d\n", ret);
-		goto out_irq_auto1_free;
-	}
 
 	/* If ch3_dual_current is true, it will measure ch3 input signal with
 	 * ch3_current and the next current of ch3_current. */
@@ -1198,28 +747,17 @@ static int palmas_gpadc_probe(struct platform_device *pdev)
 			palmas_gpadc_calibrate(adc, i);
 	}
 
-	if (adc->auto_conv0_enable || adc->auto_conv1_enable)
+	if (adc->wakeup1_enable || adc->wakeup2_enable)
 		device_wakeup_enable(&pdev->dev);
 
-	ret = palmas_gpadc_check_status(adc);
-	if (ret < 0)
-		goto out_irq_auto1_free;
-
-	palmas_gpadc_auto_conv_reset(adc);
-	ret = palmas_gpadc_auto_conv_configure(adc);
-	if (ret < 0) {
-		dev_err(adc->dev, "auto_conv_configure() failed: %d\n", ret);
-		goto out_irq_auto1_free;
-	}
-
-	palmas_gpadc_debugfs_init(adc);
+	the_adc = adc;
 	return 0;
 
 out_irq_auto1_free:
-	if (gpadc_pdata->adc_auto_conv1_data)
+	if (gpadc_pdata->adc_wakeup2_data)
 		free_irq(adc->irq_auto_1, adc);
 out_irq_auto0_free:
-	if (gpadc_pdata->adc_auto_conv0_data)
+	if (gpadc_pdata->adc_wakeup1_data)
 		free_irq(adc->irq_auto_0, adc);
 out_irq_free:
 	free_irq(adc->irq, adc);
@@ -1233,72 +771,239 @@ out:
 
 static int palmas_gpadc_remove(struct platform_device *pdev)
 {
-	struct iio_dev *iodev = dev_get_drvdata(&pdev->dev);
+	struct iio_dev *iodev = dev_to_iio_dev(&pdev->dev);
 	struct palmas_gpadc *adc = iio_priv(iodev);
 	struct palmas_platform_data *pdata = dev_get_platdata(pdev->dev.parent);
-
-	debugfs_remove_recursive(adc->dentry);
 	if (pdata->gpadc_pdata->iio_maps)
 		iio_map_array_unregister(iodev);
 	iio_device_unregister(iodev);
 	free_irq(adc->irq, adc);
-	if (adc->auto_conv0_enable)
+	if (adc->wakeup1_enable)
 		free_irq(adc->irq_auto_0, adc);
-	if (adc->auto_conv1_enable)
+	if (adc->wakeup2_enable)
 		free_irq(adc->irq_auto_1, adc);
 	iio_device_free(iodev);
 	return 0;
 }
 
-static void palmas_gpadc_shutdown(struct platform_device *pdev)
+#ifdef CONFIG_PM_SLEEP
+static int palmas_adc_wakeup_configure(struct palmas_gpadc *adc)
 {
-	struct iio_dev *iodev = dev_get_drvdata(&pdev->dev);
-	struct palmas_gpadc *adc = iio_priv(iodev);
+	int adc_period, conv;
+	int i;
+	int ch0 = 0, ch1 = 0;
+	int thres;
+	int ret;
 
-	mutex_lock(&adc->lock);
-	adc->is_shutdown = true;
-	if (adc->auto_conv0_enable || adc->auto_conv1_enable)
-		palmas_gpadc_auto_conv_reset(adc);
-	mutex_unlock(&adc->lock);
+	adc_period = adc->auto_conversion_period;
+	for (i = 0; i < 16; ++i) {
+		if (((1000 * (1 << i))/32) < adc_period)
+			continue;
+	}
+	if (i > 0)
+		i--;
+	adc_period = i;
+	ret = palmas_update_bits(adc->palmas, PALMAS_GPADC_BASE,
+			PALMAS_GPADC_AUTO_CTRL,
+			PALMAS_GPADC_AUTO_CTRL_COUNTER_CONV_MASK,
+			adc_period);
+	if (ret < 0) {
+		dev_err(adc->dev, "AUTO_CTRL write failed: %d\n", ret);
+		return ret;
+	}
+
+	conv = 0;
+	if (adc->wakeup1_enable) {
+		int is_high;
+
+		ch0 = adc->wakeup1_data.adc_channel_number;
+		conv |= PALMAS_GPADC_AUTO_CTRL_AUTO_CONV0_EN;
+		if (adc->wakeup1_data.adc_high_threshold > 0) {
+			thres = adc->wakeup1_data.adc_high_threshold;
+			is_high = 0;
+		} else {
+			thres = adc->wakeup1_data.adc_low_threshold;
+			is_high = BIT(7);
+		}
+
+		ret = palmas_write(adc->palmas, PALMAS_GPADC_BASE,
+				PALMAS_GPADC_THRES_CONV0_LSB, thres & 0xFF);
+		if (ret < 0) {
+			dev_err(adc->dev,
+				"THRES_CONV0_LSB write failed: %d\n", ret);
+			return ret;
+		}
+
+		ret = palmas_write(adc->palmas, PALMAS_GPADC_BASE,
+				PALMAS_GPADC_THRES_CONV0_MSB,
+				((thres >> 8) & 0xF) | is_high);
+		if (ret < 0) {
+			dev_err(adc->dev,
+				"THRES_CONV0_MSB write failed: %d\n", ret);
+			return ret;
+		}
+	}
+
+	if (adc->wakeup2_enable) {
+		int is_high;
+
+		ch1 = adc->wakeup2_data.adc_channel_number;
+		conv |= PALMAS_GPADC_AUTO_CTRL_AUTO_CONV1_EN;
+		if (adc->wakeup2_data.adc_high_threshold > 0) {
+			thres = adc->wakeup2_data.adc_high_threshold;
+			is_high = 0;
+		} else {
+			thres = adc->wakeup2_data.adc_low_threshold;
+			is_high = BIT(7);
+		}
+
+		ret = palmas_write(adc->palmas, PALMAS_GPADC_BASE,
+				PALMAS_GPADC_THRES_CONV1_LSB, thres & 0xFF);
+		if (ret < 0) {
+			dev_err(adc->dev,
+				"THRES_CONV1_LSB write failed: %d\n", ret);
+			return ret;
+		}
+
+		ret = palmas_write(adc->palmas, PALMAS_GPADC_BASE,
+				PALMAS_GPADC_THRES_CONV1_MSB,
+				((thres >> 8) & 0xF) | is_high);
+		if (ret < 0) {
+			dev_err(adc->dev,
+				"THRES_CONV1_MSB write failed: %d\n", ret);
+			return ret;
+		}
+	}
+
+	ret = palmas_write(adc->palmas, PALMAS_GPADC_BASE,
+			PALMAS_GPADC_AUTO_SELECT, (ch1 << 4) | ch0);
+	if (ret < 0) {
+		dev_err(adc->dev, "AUTO_SELECT write failed: %d\n", ret);
+		return ret;
+	}
+
+	ret = palmas_update_bits(adc->palmas, PALMAS_GPADC_BASE,
+			PALMAS_GPADC_AUTO_CTRL,
+			PALMAS_GPADC_AUTO_CTRL_AUTO_CONV1_EN |
+			PALMAS_GPADC_AUTO_CTRL_AUTO_CONV0_EN, conv);
+	if (ret < 0) {
+		dev_err(adc->dev, "AUTO_CTRL write failed: %d\n", ret);
+		return ret;
+	}
+	return 0;
 }
 
-#ifdef CONFIG_PM_SLEEP
+static int palmas_adc_wakeup_reset(struct palmas_gpadc *adc)
+{
+	int ret;
+
+	ret = palmas_write(adc->palmas, PALMAS_GPADC_BASE,
+			PALMAS_GPADC_AUTO_SELECT, 0);
+	if (ret < 0) {
+		dev_err(adc->dev, "AUTO_SELECT write failed: %d\n", ret);
+		return ret;
+	}
+
+	ret = palmas_disable_auto_conversion(adc);
+	if (ret < 0) {
+		dev_err(adc->dev, "Disable auto conversion failed: %d\n", ret);
+		return ret;
+	}
+	return 0;
+}
+
 static int palmas_gpadc_suspend(struct device *dev)
 {
-	struct iio_dev *iodev = dev_get_drvdata(dev);
+	struct iio_dev *iodev = dev_to_iio_dev(dev);
 	struct palmas_gpadc *adc = iio_priv(iodev);
-	int wakeup = adc->auto_conv0_enable || adc->auto_conv1_enable;
+	int wakeup = adc->wakeup1_enable || adc->wakeup2_enable;
+	int ret;
 
 	if (!device_may_wakeup(dev) || !wakeup)
 		return 0;
 
-	if (adc->auto_conv0_enable)
+	ret = palmas_adc_wakeup_configure(adc);
+	if (ret < 0)
+		return ret;
+
+	if (adc->wakeup1_enable)
 		enable_irq_wake(adc->irq_auto_0);
 
-	if (adc->auto_conv1_enable)
+	if (adc->wakeup2_enable)
 		enable_irq_wake(adc->irq_auto_1);
-
 	return 0;
 }
 
 static int palmas_gpadc_resume(struct device *dev)
 {
-	struct iio_dev *iodev = dev_get_drvdata(dev);
+	struct iio_dev *iodev = dev_to_iio_dev(dev);
 	struct palmas_gpadc *adc = iio_priv(iodev);
-	int wakeup = adc->auto_conv0_enable || adc->auto_conv1_enable;
+	int wakeup = adc->wakeup1_enable || adc->wakeup2_enable;
+	int ret;
 
 	if (!device_may_wakeup(dev) || !wakeup)
 		return 0;
 
-	if (adc->auto_conv0_enable)
+	ret = palmas_adc_wakeup_reset(adc);
+	if (ret < 0)
+		return ret;
+
+	if (adc->wakeup1_enable)
 		disable_irq_wake(adc->irq_auto_0);
 
-	if (adc->auto_conv1_enable)
+	if (adc->wakeup2_enable)
 		disable_irq_wake(adc->irq_auto_1);
 
 	return 0;
 };
 #endif
+
+int palmas_gpadc_read_physical(int channel)
+{
+	int ret;
+	int scaler;
+	struct iio_dev *iodev;
+
+	if (!the_adc) {
+		pr_err("%s not initialized\n", __func__);
+		return -EINVAL;
+	}
+
+	if (channel > PALMAS_ADC_CH_MAX) {
+		dev_err(the_adc->dev, "channel%d exceed\n", channel);
+		return -EINVAL;
+	}
+
+	iodev = iio_priv_to_dev(the_adc);
+	mutex_lock(&iodev->mlock);
+
+	ret = palmas_gpadc_read_prepare(the_adc, channel);
+	if (ret < 0) {
+		mutex_unlock(&iodev->mlock);
+		goto out;
+	}
+
+	ret = palmas_gpadc_start_convertion(the_adc, channel);
+	if (ret < 0) {
+		dev_err(the_adc->dev, "ADC start coversion failed\n");
+		goto out;
+	}
+
+	ret = palmas_gpadc_get_calibrated_code(the_adc, channel, ret);
+	if (ret < 0) {
+		dev_err(the_adc->dev, "%s failed\n", __func__);
+		goto out;
+	}
+
+	scaler = palmas_gpadc_ranges[channel].scaler;
+	ret = (1250 * scaler * ret) / 4095;
+
+out:
+	palmas_gpadc_read_done(the_adc, channel);
+	mutex_unlock(&iodev->mlock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(palmas_gpadc_read_physical);
 
 static const struct dev_pm_ops palmas_pm_ops = {
 	SET_SYSTEM_SLEEP_PM_OPS(palmas_gpadc_suspend,
@@ -1314,7 +1019,6 @@ MODULE_DEVICE_TABLE(of, of_palmas_gpadc_match_tbl);
 static struct platform_driver palmas_gpadc_driver = {
 	.probe = palmas_gpadc_probe,
 	.remove = palmas_gpadc_remove,
-	.shutdown = palmas_gpadc_shutdown,
 	.driver = {
 		.name = MOD_NAME,
 		.owner = THIS_MODULE,

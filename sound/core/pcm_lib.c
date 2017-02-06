@@ -1,6 +1,7 @@
 /*
  *  Digital Audio (PCM) abstract layer
  *  Copyright (c) by Jaroslav Kysela <perex@perex.cz>
+ *  Copyright (C) 2016 XiaoMi, Inc.
  *                   Abramo Bagnara <abramo@alsa-project.org>
  *
  *
@@ -1782,16 +1783,14 @@ static int snd_pcm_lib_ioctl_fifo_size(struct snd_pcm_substream *substream,
 {
 	struct snd_pcm_hw_params *params = arg;
 	snd_pcm_format_t format;
-	int channels;
-	ssize_t frame_size;
+	int channels, width;
 
 	params->fifo_size = substream->runtime->hw.fifo_size;
 	if (!(substream->runtime->hw.info & SNDRV_PCM_INFO_FIFO_IN_FRAMES)) {
 		format = params_format(params);
 		channels = params_channels(params);
-		frame_size = snd_pcm_format_size(format, channels);
-		if (frame_size > 0)
-			params->fifo_size /= (unsigned)frame_size;
+		width = snd_pcm_format_physical_width(format);
+		params->fifo_size /= width * channels;
 	}
 	return 0;
 }
@@ -1887,12 +1886,11 @@ static int wait_for_avail(struct snd_pcm_substream *substream,
 	if (runtime->no_period_wakeup)
 		wait_time = MAX_SCHEDULE_TIMEOUT;
 	else {
-		wait_time = 10;
+		wait_time = 10000;
 		if (runtime->rate) {
-			long t = runtime->period_size * 2 / runtime->rate;
-			wait_time = max(t, wait_time);
+			wait_time = DIV_ROUND_UP(runtime->buffer_size * 1000, runtime->rate);
 		}
-		wait_time = msecs_to_jiffies(wait_time * 1000);
+		wait_time = msecs_to_jiffies(wait_time);
 	}
 
 	for (;;) {
@@ -1938,12 +1936,11 @@ static int wait_for_avail(struct snd_pcm_substream *substream,
 		case SNDRV_PCM_STATE_DISCONNECTED:
 			err = -EBADFD;
 			goto _endloop;
-		case SNDRV_PCM_STATE_PAUSED:
-			continue;
 		}
 		if (!tout) {
 			snd_printd("%s write error (DMA or IRQ trouble?)\n",
 				   is_playback ? "playback" : "capture");
+			xrun(substream);
 			err = -EIO;
 			break;
 		}

@@ -2701,7 +2701,7 @@ static int inv_mpu_probe(struct i2c_client *client,
 		}
 	}
 
-msleep(100);
+	msleep(100);
 #else
 	/* power is turned on inside check chip type */
 	st->plat_data =

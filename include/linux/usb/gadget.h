@@ -7,11 +7,10 @@
  *
  *
  * (C) Copyright 2002-2004 by David Brownell
+ * Copyright (C) 2016 XiaoMi, Inc.
  * All Rights Reserved.
  *
  * This software is licensed under the GNU GPL version 2.
- *
- * Copyright (c) 2014-2015, NVIDIA CORPORATION.  All rights reserved.
  */
 
 #ifndef __LINUX_USB_GADGET_H
@@ -473,7 +472,6 @@ struct usb_gadget_ops {
 			struct usb_gadget_driver *);
 	int	(*udc_stop)(struct usb_gadget *,
 			struct usb_gadget_driver *);
-	int	(*set_port_state)(struct usb_gadget *, u8);
 };
 
 /**
@@ -522,6 +520,13 @@ struct usb_gadget_ops {
  * driver suspend() calls.  They are valid only when is_otg, and when the
  * device is acting as a B-Peripheral (so is_a_peripheral is false).
  */
+#define GADGET_STATE_PROCESS(x) (0x0f & (x))
+#define GADGET_STATE_DONE(x)	(0xf0 & (x))
+#define GADGET_STATE_IDLE				0x00
+#define GADGET_STATE_PROCESS_GET		0x01
+#define GADGET_STATE_PROCESS_SET		0x02
+#define GADGET_STATE_DONE_SET			0x12
+#define GADGET_STATE_DONE_RESET			0x14
 struct usb_gadget {
 	/* readonly to gadget driver */
 	const struct usb_gadget_ops	*ops;
@@ -534,14 +539,13 @@ struct usb_gadget {
 	unsigned			is_otg:1;
 	unsigned			is_a_peripheral:1;
 	unsigned			b_hnp_enable:1;
-	unsigned			rcvd_otg_hnp_reqd:1;
 	unsigned			a_hnp_support:1;
 	unsigned			a_alt_hnp_support:1;
-	unsigned			request_hnp:1;
 	const char			*name;
 	struct device			dev;
 	unsigned			out_epnum;
 	unsigned			in_epnum;
+	u8				usb_sys_state;
 };
 
 static inline void set_gadget_data(struct usb_gadget *gadget, void *data)

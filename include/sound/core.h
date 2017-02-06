@@ -120,8 +120,7 @@ struct snd_card {
 	int user_ctl_count;		/* count of all user controls */
 	struct list_head controls;	/* all controls for this card */
 	struct list_head ctl_files;	/* active control files */
-	struct mutex user_ctl_lock;	/* protects user controls against
-					   concurrent access */
+
 
 	struct snd_info_entry *proc_root;	/* root for soundcard specific files */
 	struct snd_info_entry *proc_id;	/* the card id */
@@ -142,6 +141,8 @@ struct snd_card {
 	unsigned int power_state;	/* power state */
 	struct mutex power_lock;	/* power lock */
 	wait_queue_head_t power_sleep;
+	struct task_struct *power_owner;
+	unsigned int power_count;
 #endif
 
 #if defined(CONFIG_SND_MIXER_OSS) || defined(CONFIG_SND_MIXER_OSS_MODULE)
@@ -153,12 +154,19 @@ struct snd_card {
 #ifdef CONFIG_PM
 static inline void snd_power_lock(struct snd_card *card)
 {
-	mutex_lock(&card->power_lock);
+	if (card->power_owner != current) {
+		mutex_lock(&card->power_lock);
+		card->power_owner = current;
+	}
+	card->power_count++;
 }
 
 static inline void snd_power_unlock(struct snd_card *card)
 {
-	mutex_unlock(&card->power_lock);
+	if (--card->power_count == 0) {
+		card->power_owner = NULL;
+		mutex_unlock(&card->power_lock);
+	}
 }
 
 static inline unsigned int snd_power_get_state(struct snd_card *card)

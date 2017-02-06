@@ -852,9 +852,6 @@ static int snd_pcm_pre_start(struct snd_pcm_substream *substream, int state)
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	if (runtime->status->state != SNDRV_PCM_STATE_PREPARED)
 		return -EBADFD;
-	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK &&
-	    !snd_pcm_playback_data(substream))
-		return -EPIPE;
 	runtime->trigger_master = substream;
 	return 0;
 }
@@ -3197,7 +3194,7 @@ static const struct vm_operations_struct snd_pcm_vm_ops_data_fault = {
 
 #ifndef ARCH_HAS_DMA_MMAP_COHERENT
 /* This should be defined / handled globally! */
-#if defined(CONFIG_ARM) || defined(CONFIG_ARM64)
+#ifdef CONFIG_ARM
 #define ARCH_HAS_DMA_MMAP_COHERENT
 #endif
 #endif

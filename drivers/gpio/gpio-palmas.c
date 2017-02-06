@@ -32,6 +32,7 @@ struct palmas_gpio {
 	struct gpio_chip gpio_chip;
 	struct palmas *palmas;
 };
+static struct palmas_gpio *tps65910_gpio;
 
 static inline struct palmas_gpio *to_palmas_gpio(struct gpio_chip *chip)
 {
@@ -110,6 +111,16 @@ static int palmas_gpio_output(struct gpio_chip *gc, unsigned offset,
 	if (ret < 0)
 		dev_err(gc->dev, "Reg 0x%02x update failed, %d\n", reg, ret);
 	return ret;
+}
+
+int tps6591x_gpio7_enable(bool enable)
+{
+	if (enable)
+		palmas_gpio_output(&tps65910_gpio->gpio_chip, PALMAS_GPIO7, 1);
+	else
+		palmas_gpio_output(&tps65910_gpio->gpio_chip, PALMAS_GPIO7, 0);
+
+	return 0;
 }
 
 static int palmas_gpio_input(struct gpio_chip *gc, unsigned offset)
@@ -204,6 +215,7 @@ static int palmas_gpio_probe(struct platform_device *pdev)
 	}
 
 	platform_set_drvdata(pdev, palmas_gpio);
+	tps65910_gpio = palmas_gpio;
 	return ret;
 }
 

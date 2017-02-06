@@ -3,7 +3,7 @@
  *
  * Copyright (C) 2007-2008 Google, Inc.
  * Copyright (C) 2010 Intel Corporation <tony.luck@intel.com>
- * Copyright (C) 2014 NVIDIA Corporation. All rights reserved.
+ * Copyright (C) 2016 XiaoMi, Inc.
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License version 2 as
@@ -34,7 +34,7 @@
 #include <linux/hardirq.h>
 #include <linux/jiffies.h>
 #include <linux/workqueue.h>
-#include <linux/debugfs.h>
+#include <linux/proc_fs.h>
 
 #include "internal.h"
 
@@ -228,18 +228,6 @@ static int pstore_write_compat(enum pstore_type_id type,
 	return psi->write_buf(type, reason, id, part, psinfo->buf, size, psi);
 }
 
-static void pstore_mk_knob_dir(void)
-{
-#ifdef CONFIG_DEBUG_FS
-	if (psinfo->debugfs_dir)
-		return;
-
-	psinfo->debugfs_dir = debugfs_create_dir("pstore", NULL);
-	if (!psinfo->debugfs_dir)
-		pr_err("%s: unable to create pstore directory\n", __func__);
-#endif
-}
-
 /*
  * platform specific persistent storage driver registers with
  * us here. If pstore is already mounted, call the platform
@@ -278,12 +266,9 @@ int pstore_register(struct pstore_info *psi)
 	if (pstore_is_mounted())
 		pstore_get_records(0);
 
-	pstore_mk_knob_dir();
 	kmsg_dump_register(&pstore_dumper);
 	pstore_register_console();
 	pstore_register_ftrace();
-	pstore_register_rtrace();
-	pstore_register_pmsg();
 
 	if (pstore_update_ms >= 0) {
 		pstore_timer.expires = jiffies +
@@ -295,6 +280,31 @@ int pstore_register(struct pstore_info *psi)
 }
 EXPORT_SYMBOL_GPL(pstore_register);
 
+char *log_buffer = NULL;
+static ssize_t proc_file_read(struct file *file, char __user *buf,
+			  size_t len, loff_t *offset)
+{
+	loff_t pos = *offset;
+	ssize_t count;
+	ssize_t size = (ssize_t)PDE_DATA(file_inode(file));
+
+	if (pos >= size)
+		return 0;
+
+	count = min(len, (size_t)(size - pos));
+	if (copy_to_user(buf, log_buffer + pos, count))
+		return -EFAULT;
+
+	*offset += count;
+	return count;
+}
+
+static const struct file_operations proc_file_fops = {
+	.owner		= THIS_MODULE,
+	.read		= proc_file_read,
+	.llseek		= default_llseek,
+};
+
 /*
  * Read all the records from the persistent store. Create
  * files in our filesystem.  Don't warn about -EEXIST errors
@@ -304,13 +314,13 @@ EXPORT_SYMBOL_GPL(pstore_register);
 void pstore_get_records(int quiet)
 {
 	struct pstore_info *psi = psinfo;
-	char			*buf = NULL;
 	ssize_t			size;
 	u64			id;
 	int			count;
 	enum pstore_type_id	type;
 	struct timespec		time;
-	int			failed = 0, rc;
+	int			failed = 0;
+	struct proc_dir_entry *entry = NULL;
 
 	if (!psi)
 		return;
@@ -319,12 +329,12 @@ void pstore_get_records(int quiet)
 	if (psi->open && psi->open(psi))
 		goto out;
 
-	while ((size = psi->read(&id, &type, &count, &time, &buf, psi)) > 0) {
-		rc = pstore_mkfile(type, psi->name, id, count, buf,
-				  (size_t)size, time, psi);
-		kfree(buf);
-		buf = NULL;
-		if (rc && (rc != -EEXIST || !quiet))
+	while ((size = psi->read(&id, &type, &count, &time, &log_buffer, psi)) > 0) {
+		if (!entry) {
+			entry = proc_create_data("last_kmsg", S_IFREG | S_IRUGO, NULL, &proc_file_fops, size);
+			proc_set_size(entry, size);
+		}
+		if (!entry && !quiet)
 			failed++;
 	}
 	if (psi->close)

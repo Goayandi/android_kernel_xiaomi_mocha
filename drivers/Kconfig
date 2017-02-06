@@ -172,13 +172,13 @@ source "drivers/ipack/Kconfig"
 
 source "drivers/reset/Kconfig"
 
+source "drivers/tspdrv/Kconfig"
+
 source "drivers/edp/Kconfig"
 
 source "drivers/gpu/nvgpu/Kconfig"
 
 source "drivers/phy/Kconfig"
-
-source "drivers/tspdrv/Kconfig"
 
 source "drivers/android/Kconfig"
 

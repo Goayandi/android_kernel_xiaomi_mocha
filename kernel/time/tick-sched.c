@@ -721,10 +721,8 @@ static bool can_stop_idle_tick(int cpu, struct tick_sched *ts)
 		return false;
 	}
 
-	if (unlikely(ts->nohz_mode == NOHZ_MODE_INACTIVE)) {
-		ts->sleep_length = (ktime_t) { .tv64 = NSEC_PER_SEC/HZ };
+	if (unlikely(ts->nohz_mode == NOHZ_MODE_INACTIVE))
 		return false;
-	}
 
 	if (need_resched())
 		return false;
@@ -866,15 +864,8 @@ static void tick_nohz_restart(struct tick_sched *ts, ktime_t now)
 			hrtimer_start_expires(&ts->sched_timer,
 					      HRTIMER_MODE_ABS_PINNED);
 			/* Check, if the timer was already in the past */
-			if (hrtimer_active(&ts->sched_timer)) {
-				ktime_t remaining, expire;
-				expire = hrtimer_get_expires(&ts->sched_timer);
-				remaining = ktime_sub(expire, ktime_get());
-				if (remaining.tv64 > 0)
-					break;
-				else
-					hrtimer_cancel(&ts->sched_timer);
-			}
+			if (hrtimer_active(&ts->sched_timer))
+				break;
 		} else {
 			if (!tick_program_event(
 				hrtimer_get_expires(&ts->sched_timer), 0))

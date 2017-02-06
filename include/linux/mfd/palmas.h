@@ -2,7 +2,8 @@
  * TI Palmas
  *
  * Copyright 2011-2013 Texas Instruments Inc.
- * Copyright (c) 2013-2014, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2013, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (C) 2016 XiaoMi, Inc.
  *
  * Author: Graeme Gregory <gg@slimlogic.co.uk>
  * Author: Ian Lartey <ian@slimlogic.co.uk>
@@ -27,6 +28,7 @@
 #include <linux/iio/machine.h>
 #include <linux/extcon.h>
 #include <linux/thermal.h>
+#include <linux/wakelock.h>
 
 #define PALMAS_NUM_CLIENTS	4
 
@@ -234,7 +236,7 @@ struct palmas {
 	DECLARE_BITMAP(volatile_smps_registers, PALMAS_MAX_FN_REGISTERS);
 
 	/* Stored chip id */
-	u32 id;
+	int id;
 
 	unsigned int submodule_lists;
 
@@ -266,17 +268,15 @@ struct palmas {
 };
 
 /*
- * ADC auto conv property: Generate auto conv interrupt when threshold crossed.
+ * ADC wakeup property: Wakup the system from suspend when threshold crossed.
  * @adc_channel_number: ADC channel number for monitoring.
  * @adc_high_threshold: ADC High raw data for upper threshold to generate int.
  * @adc_low_threshold: ADC low raw data for lower threshold to generate int.
- * @adc_shutdown: Shutdown when interrupt generated.
  */
-struct palmas_adc_auto_conv_property {
+struct palmas_adc_wakeup_property {
 	int adc_channel_number;
 	int adc_high_threshold;
 	int adc_low_threshold;
-	bool adc_shutdown;
 };
 
 struct palmas_gpadc_platform_data {
@@ -299,8 +299,8 @@ struct palmas_gpadc_platform_data {
 
 	struct iio_map *iio_maps;
 	int auto_conversion_period_ms;
-	struct palmas_adc_auto_conv_property *adc_auto_conv0_data;
-	struct palmas_adc_auto_conv_property *adc_auto_conv1_data;
+	struct palmas_adc_wakeup_property *adc_wakeup1_data;
+	struct palmas_adc_wakeup_property *adc_wakeup2_data;
 };
 
 struct palmas_reg_init {
@@ -363,18 +363,6 @@ struct palmas_reg_init {
 	 * device supports.
 	 */
 	int tracking_regulator;
-
-	/*
-	 * disable active discharge on idle. This will keep disablign active
-	 * discharge on idle state and enable on suspend/shutdown.
-	 */
-	bool disable_active_discharge_idle;
-
-	/* Disable pull down for SMPS/LDO */
-	bool disable_pull_down;
-
-	/* Set regulator on bypass mode when it is more than bypass voltage */
-	int bypass_voltage;
 };
 
 enum palmas_regulators {
@@ -609,12 +597,6 @@ struct palmas_sim_platform_data {
 	unsigned det2_pd:1;
 };
 
-struct palmas_ldousb_in_platform_data {
-	u32 ldousb_in_threshold_voltage;
-	u32 threshold_voltage_tolerance;
-	bool enable_in1_above_threshold;
-};
-
 struct palmas_platform_data {
 	int irq_flags;
 	int gpio_base;
@@ -632,7 +614,6 @@ struct palmas_platform_data {
 	struct palmas_pm_platform_data *pm_pdata;
 	struct palmas_battery_platform_data *battery_pdata;
 	struct palmas_sim_platform_data *sim_pdata;
-	struct palmas_ldousb_in_platform_data  *ldousb_in_pdata;
 
 	struct palmas_clk32k_init_data  *clk32k_init_data;
 	int clk32k_init_data_size;
@@ -727,20 +708,15 @@ struct palmas_pmic {
 
 	int smps123;
 	int smps457;
-	int irq;
 	bool smps10_regulator_enabled;
 	int ldo_vref0p425;
 	bool smps10_boost_disable_deferred;
-	bool shutdown;
 
 	int range[PALMAS_REG_SMPS10_OUT1];
 	unsigned int ramp_delay[PALMAS_REG_SMPS10_OUT1];
 	bool ramp_delay_support[PALMAS_NUM_REGS];
 	unsigned int current_reg_mode[PALMAS_REG_SMPS10_OUT1];
 	unsigned long config_flags[PALMAS_NUM_REGS];
-	bool disable_active_discharge_idle[PALMAS_NUM_REGS];
-	bool disable_pull_down[PALMAS_NUM_REGS];
-	struct palmas_pmic_platform_data *pdata;
 };
 
 struct palmas_resource {
@@ -779,6 +755,7 @@ struct palmas_usb {
 	struct delayed_work cable_update_wq;
 	int cable_debounce_time;
 	int cur_cable_index;
+	struct wake_lock wakelock;
 };
 
 #define comparator_to_palmas(x) container_of((x), struct palmas_usb, comparator)
@@ -1700,9 +1677,6 @@ enum usb_irq_events {
 #define PALMAS_LDO_CTRL_LDO5_BYPASS_SRC_SEL_SMPS6		0x6
 #define PALMAS_LDO_CTRL_LDOUSB_ON_VBUS_VSYS			0x01
 #define PALMAS_LDO_CTRL_LDOUSB_ON_VBUS_VSYS_SHIFT		0
-#define PALMAS_LDO_CTRL_LDOUSB_ON_VBUS_VSYS_MASK		0x1
-#define PALMAS_LDO_CTRL_LDOUSB_ON_VBUS_VSYS_IN1			0x1
-#define PALMAS_LDO_CTRL_LDOUSB_ON_VBUS_VSYS_IN2			0x0
 
 /* Bit definitions for LDO_PD_CTRL1 */
 #define PALMAS_LDO_PD_CTRL1_LDO8				0x80
@@ -1925,6 +1899,12 @@ enum usb_irq_events {
 #define PALMAS_LONG_PRESS_KEY_TIME_8SECONDS	1
 #define PALMAS_LONG_PRESS_KEY_TIME_10SECONDS	2
 #define PALMAS_LONG_PRESS_KEY_TIME_12SECONDS	3
+
+/* Register bit values for power on debounce time */
+#define PALMAS_LONG_PRESS_KEY_PWRON_DEBOUNCE_TIME_15MS 0
+#define PALMAS_LONG_PRESS_KEY_PWRON_DEBOUNCE_TIME_100MS 1
+#define PALMAS_LONG_PRESS_KEY_PWRON_DEBOUNCE_TIME_500MS 2
+#define PALMAS_LONG_PRESS_KEY_PWRON_DEBOUNCE_TIME_1S 3
 
 /* Bit definitions for OSC_THERM_CTRL */
 #define PALMAS_OSC_THERM_CTRL_VANA_ON_IN_SLEEP			0x80
@@ -3871,7 +3851,7 @@ enum usb_irq_events {
 #define PALMAS_CHARGER_REG09					0x09
 #define PALMAS_CHARGER_REG10					0x0a
 
-#define BQ24190_IC_VER                  0x20
+#define BQ24190_IC_VER                  0x40
 #define BQ24192_IC_VER                  0x28
 #define BQ24192i_IC_VER                 0x18
 

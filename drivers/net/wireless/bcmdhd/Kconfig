@@ -19,6 +19,10 @@ config BCMDYNAMIC
 	bool "Broadcom 43241/4352 wireless card support"
 	depends on BCMDHD
 
+config BCM4354
+	tristate "BCM4354 support"
+	depends on BCMDHD
+
 config BCM43241
 	bool "Broadcom 43241 wireless card support"
 	depends on BCMDHD && !BCMDYNAMIC
