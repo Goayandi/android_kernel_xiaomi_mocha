@@ -24,7 +24,7 @@
 	host1x {
 		dsi {
 			panel-l-wxga-7 {
-				status = "disabled";
+				status = "okay";
 				compatible = "lg,wxga-7";
 				nvidia,dsi-instance = <DSI_INSTANCE_0>;
 				nvidia,dsi-n-data-lanes = <4>;
@@ -121,7 +121,7 @@
 	};
 	backlight {
 		panel-l-wxga-7-bl {
-			status = "disabled";
+			status = "okay";
 			compatible = "lg,wxga-7-bl";
 			pwms = <&tegra_pwm 1 1000000>;
 			max-brightness = <255>;

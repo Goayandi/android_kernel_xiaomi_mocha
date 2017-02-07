@@ -196,6 +196,10 @@ dtb-$(CONFIG_ARCH_TEGRA) += tegra20-harmony.dtb \
 	tegra30-cardhu-a02.dtb \
 	tegra30-cardhu-a04.dtb \
 	tegra114-dalmore.dtb \
+	tegra114-dalmore-e1611-1000-a00-00.dtb \
+	tegra114-dalmore-e1611-1001-a00-00.dtb \
+	tegra114-macallan.dtb \
+	tegra114-roth.dtb \
 	tegra114-pluto.dtb \
 	tegra124-ardbeg-e1792-1100-a00-00.dtb \
 	tegra124-ardbeg-e1792-1100-a00-01.dtb \
@@ -211,12 +215,21 @@ dtb-$(CONFIG_ARCH_TEGRA) += tegra20-harmony.dtb \
 	tegra124-android-p1859-hdmiprimary.dtb \
 	tegra124-android-p1889.dtb \
 	tegra124-android-p1889-hdmiprimary.dtb \
+	tegra114-pismo.dtb \
+	tegra124-bonaire_sim.dtb \
+	tegra124-bonaire.dtb \
+	tegra124-ardbeg.dtb \
+	tegra124-ardbeg-battery.dtb \
+	tegra124-ardbeg-a03-00.dtb \
+	tegra124-ardbeg-a03-00-battery.dtb \
 	tegra124-laguna.dtb \
 	tegra124-laguna-pm358.dtb \
 	tegra124-jetson_tk1-pm375-000-c00-00.dtb \
 	tegra124-norrin-pm374-0001-a00-00.dtb \
 	tegra124-norrin-pm374-0001-a01-00.dtb \
+	tegra124-norrin.dtb \
 	tegra124-loki.dtb \
+	tegra124-foster.dtb \
 	tegra124-loki-02-cell-battery.dtb \
 	tegra124-loki-03-cell-battery.dtb \
 	tegra124-loki-e2548-a00.dtb \
@@ -235,9 +248,14 @@ dtb-$(CONFIG_ARCH_TEGRA) += tegra20-harmony.dtb \
 	tegra124-loki-thor195-e2549-a00.dtb \
 	tegra124-tn8-e1780-1100-a02-01.dtb \
 	tegra124-tn8-e1780-1100-a02.dtb \
+	tegra124-tn8-e1780-1100-a02-battery.dtb \
+	tegra124-tn8-e1780-1100-a02-01.dtb \
 	tegra124-tn8-e1780-1100-a03-01.dtb \
 	tegra124-tn8-e1780-1100-a03.dtb \
 	tegra124-tn8-e1784-1100-a00.dtb \
+	tegra124-tn8-e1780-1100-a03-battery.dtb \
+	tegra124-tn8-e1780-1100-a03-01.dtb \
+	tegra124-tn8-e1780-1100-a03-01-battery.dtb \
 	tegra124-tn8-e1784-1101-a00.dtb \
 	tegra124-tn8-e1784-1101-a00-01.dtb \
 	tegra124-tn8-e1922-1100-a00.dtb \
@@ -252,6 +270,8 @@ dtb-$(CONFIG_ARCH_TEGRA) += tegra20-harmony.dtb \
 	tegra124-tn8-p1761-1270-a04-e-battery.dtb \
 	tegra124-tn8-p1761-1270-a04-e-byd-battery.dtb \
 	tegra124-tn8-p1761-1470-a00.dtb \
+	tegra124-tn8-p1761-1470-a00-battery.dtb\
+	tegra124-mocha.dtb \
 	tegra124-e1782_sku1100.dtb \
 	tegra124-e1791.dtb \
 	tegra124-e1923.dtb \
@@ -264,6 +284,8 @@ dtb-$(CONFIG_ARCH_TEGRA) += tegra20-harmony.dtb \
 	tegra124-p1855.dtb \
 	tegra124-vcm30t124-flashing.dtb \
 	tegra124-green-arrow-p2267-base-a00.dtb
+	tegra124-ardbeg_sata.dtb \
+	tegra124-vcm30_t124.dtb
 dtb-$(CONFIG_ARCH_VERSATILE) += versatile-ab.dtb \
 	versatile-pb.dtb
 dtb-$(CONFIG_ARCH_VEXPRESS) += vexpress-v2p-ca5s.dtb \

@@ -2,6 +2,7 @@
  * arch/arm/mach-tegra/tegra12_speedo.c
  *
  * Copyright (C) 2013-2014 NVIDIA Corporation. All rights reserved.
+ * Copyright (C) 2016 XiaoMi, Inc.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -29,8 +30,7 @@
 #include <linux/tegra-fuse.h>
 
 #include "iomap.h"
-#include <linux/platform/tegra/common.h>
-#include "board.h"
+#include "common.h"
 
 #define TEGRA124_CPU_SPEEDO 2271 /* FIXME: Get Correct Value */
 
@@ -92,8 +92,7 @@ static const u32 core_process_speedos[][CORE_PROCESS_CORNERS_NUM] = {
 
 static void rev_sku_to_speedo_ids(int rev, int sku)
 {
-	int can_boost = tegra_get_sku_override();
-	int chip_personality = tegra_get_chip_personality();
+	int can_boost = (tegra_spare_fuse(60) && tegra_get_sku_override());
 
 	switch (sku) {
 	case 0x00: /* Engg sku */
@@ -109,14 +108,10 @@ static void rev_sku_to_speedo_ids(int rev, int sku)
 	case 0x87:
 	case 0x27:
 	case 0x24:
-		cpu_speedo_id = 5;
+		cpu_speedo_id = sku == 0x87 ? 2 : 5;
 		soc_speedo_id = 0;
 		gpu_speedo_id = 1;
 		threshold_index = 0;
-		if (sku == 0x87 && chip_personality == always_on) {
-			cpu_speedo_id = 6;
-			gpu_speedo_id = 4;
-		}
 		break;
 	case 0x07:
 		if (can_boost) {
@@ -133,25 +128,6 @@ static void rev_sku_to_speedo_ids(int rev, int sku)
 		soc_speedo_id = 1;
 		gpu_speedo_id = 1;
 		threshold_index = 1;
-		break;
-	case 0x49:
-	case 0x4A:
-	case 0x48:
-		cpu_speedo_id = 4;
-		soc_speedo_id = 2;
-		gpu_speedo_id = 3;
-		threshold_index = 1;
-		break;
-	case 0x80:
-		cpu_speedo_id = 8;
-		soc_speedo_id = 4;
-		gpu_speedo_id = 6;
-		if (chip_personality == always_on) {
-			cpu_speedo_id = 7;
-			soc_speedo_id = 3;
-			gpu_speedo_id = 5;
-		}
-		threshold_index = 0;
 		break;
 	default:
 		pr_warn("Tegra12: Unknown SKU %d\n", sku);
@@ -176,7 +152,6 @@ void tegra_init_speedo_data(void)
 		gpu_speedo_id   = 0;
 		package_id = -1;
 		cpu_speedo_value = 1777;
-		gpu_speedo_value = 2000;
 		cpu_speedo_0_value = 0;
 		cpu_speedo_1_value = 0;
 		soc_speedo_0_value = 0;
@@ -237,8 +212,6 @@ void tegra_init_speedo_data(void)
         }
 	core_process_id = i;
 
-	pr_info("Tegra12: CPU Speedo value %d, Soc Speedo value %d, Gpu Speedo value %d\n",
-		cpu_speedo_value, soc_speedo_0_value, gpu_speedo_value);
 	pr_info("Tegra12: CPU Speedo ID %d, Soc Speedo ID %d, Gpu Speedo ID %d\n",
 		cpu_speedo_id, soc_speedo_id, gpu_speedo_id);
 	pr_info("Tegra12: CPU Process ID %d,Soc Process ID %d,Gpu Process ID %d\n",
@@ -304,7 +277,6 @@ int tegra_soc_speedo_0_value(void)
 {
 	return soc_speedo_0_value;
 }
-EXPORT_SYMBOL(tegra_soc_speedo_0_value);
 
 int tegra_soc_speedo_1_value(void)
 {
@@ -328,21 +300,11 @@ int tegra_cpu_speedo_mv(void)
 
 int tegra_core_speedo_mv(void)
 {
-	int chip_personality = tegra_get_chip_personality();
-
 	switch (soc_speedo_id) {
 	case 0:
-		if (chip_personality == always_on)
-			return 1010;
 		return 1150;
 	case 1:
 		return 1150;
-	case 2:
-		return 1040;
-	case 3:
-		return 1000;
-	case 4:
-		return 1100;
 	default:
 		BUG();
 	}
@@ -367,11 +329,6 @@ static int get_enable_app_profiles(char *val, const struct kernel_param *kp)
 {
 	return param_get_uint(val, kp);
 }
-bool tegra_is_soc_automotive_speedo(void)
-{
-	return (tegra_soc_speedo_id() == 2);
-}
-EXPORT_SYMBOL(tegra_is_soc_automotive_speedo);
 
 static struct kernel_param_ops tegra_profiles_ops = {
 	.get = get_enable_app_profiles,

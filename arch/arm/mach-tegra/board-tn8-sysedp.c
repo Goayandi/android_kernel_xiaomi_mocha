@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2013-2014, NVIDIA Corporation. All rights reserved.
+ * Copyright (C) 2016 XiaoMi, Inc.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -21,16 +22,15 @@
 #include <linux/power_supply.h>
 #include <mach/edp.h>
 #include <linux/interrupt.h>
-#include <linux/tegra_soctherm.h>
-
 #include "board-ardbeg.h"
 #include "board.h"
 #include "board-panel.h"
-#include <linux/platform/tegra/common.h>
+#include "common.h"
+#include "tegra11_soctherm.h"
 
 /* --- EDP consumers data --- */
 static unsigned int ov5693_states[] = { 0, 300 };
-static unsigned int mt9m114_states[] = { 0, 150 };
+static unsigned int imx179_states[] = { 0, 500 };
 static unsigned int sdhci_states[] = { 0, 966 };
 static unsigned int speaker_states[] = { 0, 1080 };
 static unsigned int wifi_states[] = { 0, 1020 };
@@ -57,24 +57,18 @@ static unsigned int as364x_states[] = {
 
 static struct sysedp_consumer_data tn8_sysedp_consumer_data[] = {
 	SYSEDP_CONSUMER_DATA("ov5693", ov5693_states),
-	SYSEDP_CONSUMER_DATA("mt9m114", mt9m114_states),
+	SYSEDP_CONSUMER_DATA("imx179", imx179_states),
 	SYSEDP_CONSUMER_DATA("speaker", speaker_states),
 	SYSEDP_CONSUMER_DATA("wifi", wifi_states),
-	SYSEDP_CONSUMER_DATA("pwm-backlight", pwm_backlight_default_states),
+	SYSEDP_CONSUMER_DATA("lcd-backlight", pwm_backlight_default_states),
 	SYSEDP_CONSUMER_DATA("sdhci-tegra.2", sdhci_states),
 	SYSEDP_CONSUMER_DATA("sdhci-tegra.3", sdhci_states),
-	SYSEDP_CONSUMER_DATA("as364x", as364x_states),
 };
 
 static struct sysedp_platform_data tn8_sysedp_platform_data = {
 	.consumer_data = tn8_sysedp_consumer_data,
 	.consumer_data_size = ARRAY_SIZE(tn8_sysedp_consumer_data),
 	.margin = 0,
-#if defined(CONFIG_ARCH_TEGRA_13x_SOC)
-	.min_budget = 0,
-#else
-	.min_budget = 4400,
-#endif
 };
 
 static struct platform_device tn8_sysedp_device = {
@@ -114,21 +108,14 @@ void __init tn8_new_sysedp_init(void)
 	WARN_ON(r);
 }
 
-#if defined(CONFIG_ARCH_TEGRA_13x_SOC)
 static struct tegra_sysedp_platform_data tn8_sysedp_dynamic_capping_platdata = {
+	.corecap = td575d_sysedp_corecap,
+	.corecap_size = td575d_sysedp_corecap_sz,
 	.core_gain = 100,
 	.init_req_watts = 20000,
 	.pthrot_ratio = 75,
 	.cap_method = TEGRA_SYSEDP_CAP_METHOD_SIGNAL,
 };
-#else
-static struct tegra_sysedp_platform_data tn8_sysedp_dynamic_capping_platdata = {
-	.core_gain = 115,
-	.init_req_watts = 20000,
-	.pthrot_ratio = 75,
-	.cap_method = TEGRA_SYSEDP_CAP_METHOD_SIGNAL,
-};
-#endif
 
 static struct platform_device tn8_sysedp_dynamic_capping = {
 	.name = "sysedp_dynamic_capping",
@@ -150,49 +137,43 @@ struct sysedp_reactive_capping_platform_data tn8_voltmon_oc1_platdata = {
 
 static struct platform_device tn8_sysedp_reactive_capping_oc1 = {
 	.name = "sysedp_reactive_capping",
-	.id = 0,
+	.id = -1,
 	.dev = { .platform_data = &tn8_voltmon_oc1_platdata }
-};
-
-struct sysedp_reactive_capping_platform_data tn8_battery_oc4_platdata = {
-	.max_capping_mw = 15000,
-	.step_alarm_mw = 1000,
-	.step_relax_mw = 500,
-	.relax_ms = 250,
-	.sysedpc = {
-		.name = "battery_oc4"
-	},
-	.irq = TEGRA_SOC_OC_IRQ_BASE + TEGRA_SOC_OC_IRQ_4,
-	.irq_flags = IRQF_ONESHOT | IRQF_TRIGGER_FALLING,
-};
-
-static struct platform_device tn8_sysedp_reactive_capping_oc4 = {
-	.name = "sysedp_reactive_capping",
-	.id = 1,
-	.dev = { .platform_data = &tn8_battery_oc4_platdata }
 };
 
 
 void __init tn8_sysedp_dynamic_capping_init(void)
 {
 	int r;
-	struct tegra_sysedp_corecap *corecap;
-	unsigned int corecap_size;
+	int sku_id;
 	struct board_info board;
 
-
-	corecap = tegra_get_sysedp_corecap(&corecap_size);
-	if (!corecap) {
+	tn8_sysedp_dynamic_capping_platdata.cpufreq_lim = tegra_get_system_edp_entries(
+		&tn8_sysedp_dynamic_capping_platdata.cpufreq_lim_size);
+	if (!tn8_sysedp_dynamic_capping_platdata.cpufreq_lim) {
 		WARN_ON(1);
 		return;
 	}
-	tn8_sysedp_dynamic_capping_platdata.corecap = corecap;
-	tn8_sysedp_dynamic_capping_platdata.corecap_size = corecap_size;
+
+	sku_id = tegra_get_sku_id();
+	switch (sku_id) {
+	case 0x1F:
+	case 0x27:
+	case 0x87:
+		break;
+	case 0xF:
+		tn8_sysedp_dynamic_capping_platdata.corecap = td570d_sysedp_corecap;
+		tn8_sysedp_dynamic_capping_platdata.corecap_size = td570d_sysedp_corecap_sz;
+		break;
+	default:
+		pr_warn("%s: Unknown tn8 sku id, %x!  Assuming td575d.\n",
+				__func__, sku_id);
+	}
 
 	tegra_get_board_info(&board);
 
-	if ((board.board_id == BOARD_P1761 && board.fab >= BOARD_FAB_A02) ||
-	    board.board_id == BOARD_P1765) {
+	if ((board.board_id == BOARD_P1761) &&
+		(board.fab >= BOARD_FAB_A02)) {
 		tn8_sysedp_dynamic_capping_platdata.cap_method =
 			TEGRA_SYSEDP_CAP_METHOD_RELAX;
 	}
@@ -201,8 +182,5 @@ void __init tn8_sysedp_dynamic_capping_init(void)
 	WARN_ON(r);
 
 	r = platform_device_register(&tn8_sysedp_reactive_capping_oc1);
-	WARN_ON(r);
-
-	r = platform_device_register(&tn8_sysedp_reactive_capping_oc4);
 	WARN_ON(r);
 }

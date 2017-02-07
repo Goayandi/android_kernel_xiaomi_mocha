@@ -2,6 +2,7 @@
  * arch/arm/boot/dts/tegra124-platforms/tegra124-tn8-e1769-pmic.dtsi
  *
  * Copyright (c) 2014, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (C) 2016 XiaoMi, Inc.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -81,9 +82,9 @@
 				};
 			};
 
-			palmas_extcon: extcon {
+			extcon {
 				compatible = "ti,palmas-usb";
-				#extcon-cells = <1>;
+				extcon-name = "palmas-extcon";
 				ti,wakeup;
 				ti,enable-id-detection;
 				ti,enable-vbus-detection;
@@ -92,15 +93,28 @@
 			power_pm {
 				compatible = "ti,palmas-pm";
 				system-pmic-power-off;
+				system-pmic-power-reset;
 			};
 
-			palams_gpadc: gpadc {
+			gpadc {
 				compatible = "ti,palmas-gpadc";
 				interrupt-parent = <&palmas>;
 				interrupts = <18 0
 					      16 0
 					      17 0>;
-				#io-channel-cells = <1>;
+				iio_map {
+					ch1 {
+						ti,adc-channel-number = <1>;
+						ti,adc-consumer-device = "generic-adc-thermal.0";
+						ti,adc-consumer-channel ="battery-temp-channel";
+					};
+
+					ch6 {
+						ti,adc-channel-number = <6>;
+						ti,adc-consumer-device = "palmas-battery";
+						ti,adc-consumer-channel ="vbat_channel";
+					};
+				};
 			};
 
 			clock {
@@ -159,6 +173,8 @@
 
 					palmas_smps6: smps6 {
 						regulator-name = "vddio-ddr";
+						regulator-min-microvolt = <1350000>;
+						regulator-max-microvolt = <1350000>;
 						regulator-always-on;
 						regulator-boot-on;
 
@@ -194,6 +210,8 @@
 
 					palmas_smps8: smps8 {
 						regulator-name = "vdd-1v8";
+						regulator-min-microvolt = <1800000>;
+						regulator-max-microvolt = <1800000>;
 						regulator-always-on;
 						regulator-boot-on;
 
@@ -231,13 +249,22 @@
 							c9 {
 								regulator-consumer-supply = "vddio_sys_2";
 							};
+							c10 {
+								regulator-consumer-supply = "pwrdet_nand";
+							};
 							c11 {
 								regulator-consumer-supply = "vddio_sdmmc";
 								regulator-consumer-device = "sdhci-tegra.0";
 							};
+							c12 {
+								regulator-consumer-supply = "pwrdet_sdmmc1";
+							};
 							c13 {
 								regulator-consumer-supply = "vddio_sdmmc";
 								regulator-consumer-device = "sdhci-tegra.3";
+							};
+							c14 {
+								regulator-consumer-supply = "pwrdet_sdmmc4";
 							};
 							c15 {
 								regulator-consumer-supply = "avdd_pll_utmip";
@@ -255,14 +282,27 @@
 								regulator-consumer-supply = "avdd_pll_utmip";
 								regulator-consumer-device = "tegra-ehci.2";
 							};
+							c19 {
+								regulator-consumer-supply = "avdd_pll_utmip";
+								regulator-consumer-device = "tegra-xhci";
+							};
 							c20 {
 								regulator-consumer-supply = "vddio_audio";
+							};
+							c21 {
+								regulator-consumer-supply = "pwrdet_audio";
 							};
 							c22 {
 								regulator-consumer-supply = "vddio_uart";
 							};
+							c23 {
+								regulator-consumer-supply = "pwrdet_uart";
+							};
 							c24 {
 								regulator-consumer-supply = "vddio_bb";
+							};
+							c25 {
+								regulator-consumer-supply = "pwrdet_bb";
 							};
 							c26 {
 								regulator-consumer-supply = "vdd_dtv";
@@ -277,6 +317,9 @@
 							c29 {
 								regulator-consumer-supply = "vddio_cam";
 								regulator-consumer-device = "vi";
+							};
+							c30 {
+								regulator-consumer-supply = "pwrdet_cam";
 							};
 							c31 {
 								regulator-consumer-supply = "dvdd";
@@ -339,6 +382,8 @@
 						regulator-name = "vdd-out1-5v0";
 						regulator-min-microvolt = <5000000>;
 						regulator-max-microvolt = <5000000>;
+						regulator-always-on;
+						regulator-boot-on;
 					};
 
 					palmas_smps10_out2: smps10_out2 {
@@ -355,19 +400,26 @@
 							c3 {
 								regulator-consumer-supply = "vdd_5v0_dis";
 							};
-							c4 {
-								regulator-consumer-supply = "spkvdd";
-								regulator-consumer-device = "tegra-snd-rt5639.0";
+							c6 {
+								regulator-consumer-supply = "avddio_pex";
+								regulator-consumer-device = "tegra-pcie";
 							};
-							c5 {
-								regulator-consumer-supply = "spkvdd";
-								regulator-consumer-device = "tegra-snd-rt5645.0";
+							c7 {
+								regulator-consumer-supply = "dvddio_pex";
+								regulator-consumer-device = "tegra-pcie";
 							};
+							c8 {
+								regulator-consumer-supply = "avddio_usb";
+								regulator-consumer-device = "tegra-xhci";
+							};
+
 						};
 					};
 
 					palmas_ldo1: ldo1 {
 						regulator-name = "avdd-pll";
+						regulator-min-microvolt = <1050000>;
+						regulator-max-microvolt = <1050000>;
 						regulator-always-on;
 						regulator-boot-on;
 						ti,roof-floor = <3>;
@@ -400,6 +452,10 @@
 							c9 {
 								regulator-consumer-supply = "avdd_pll_cg";
 							};
+							c10 {
+								regulator-consumer-supply = "avdd_pex_pll";
+								regulator-consumer-device = "tegra-pcie";
+							};
 							c11 {
 								regulator-consumer-supply = "avdd_hdmi_pll";
 								regulator-consumer-device = "tegradc.1";
@@ -412,6 +468,21 @@
 						regulator-name = "vdd-pex";
 						regulator-min-microvolt = <2800000>;
 						regulator-max-microvolt = <3300000>;
+
+						consumers {
+							c1 {
+								regulator-consumer-supply = "hvdd_pex";
+								regulator-consumer-device = "tegra_pcie";
+							};
+							c2 {
+								regulator-consumer-supply = "hvdd_pex_pll_e";
+								regulator-consumer-device = "tegra_pcie";
+							};
+							c3 {
+								regulator-consumer-supply = "vddio_pex_ctl";
+								regulator-consumer-device = "tegra_pcie";
+							};
+						};
 					};
 
 					ldo3 {
@@ -461,8 +532,10 @@
 						};
 					};
 
-					ldo5_reg: ldo5 {
+					ldo5 {
 						regulator-name = "avdd-dsi-csi";
+						regulator-min-microvolt = <1200000>;
+						regulator-max-microvolt = <1200000>;
 
 						consumers {
 							c1 {
@@ -472,6 +545,10 @@
 							c2 {
 								regulator-consumer-supply = "vddio_hsic";
 								regulator-consumer-device = "tegra-ehci.2";
+							};
+							c3 {
+								regulator-consumer-supply = "vddio_hsic";
+								regulator-consumer-device = "tegra-xhci";
 							};
 							c4 {
 								regulator-consumer-supply = "avdd_dsi_csi";
@@ -490,6 +567,9 @@
 								regulator-consumer-supply = "avdd_dsi_csi";
 								regulator-consumer-device = "vi.1";
 							};
+							c8 {
+								regulator-consumer-supply = "pwrdet_mipi";
+							};
 							c9 {
 								regulator-consumer-supply = "avdd_hsic_com";
 							};
@@ -504,7 +584,7 @@
 						};
 					};
 
-					ldo6_reg: ldo6 {
+					ldo6 {
 						regulator-name = "vdd-lcd-hv";
 						regulator-min-microvolt = <3300000>;
 						regulator-max-microvolt = <3300000>;
@@ -573,7 +653,7 @@
 						};
 					};
 
-					palmas_ldo9: ldo9 {
+					ldo9 {
 						regulator-name = "vddio-sdmmc-2";
 						regulator-min-microvolt = <1800000>;
 						regulator-max-microvolt = <3300000>;
@@ -583,11 +663,16 @@
 								regulator-consumer-supply = "vddio_sdmmc";
 								regulator-consumer-device = "sdhci-tegra.2";
 							};
+							c2 {
+								regulator-consumer-supply = "pwrdet_sdmmc3";
+							};
 						};
 					};
 
 					palmas_ldoln: ldoln {
 						regulator-name = "vddio-hv";
+						regulator-min-microvolt = <3300000>;
+						regulator-max-microvolt = <3300000>;
 						regulator-always-on;
 						regulator-boot-on;
 
@@ -601,15 +686,27 @@
 								regulator-consumer-device = "tegradc.1";
 
 							};
+							c3 {
+								regulator-consumer-supply = "pwrdet_hv";
+							};
+							c4 {
+								regulator-consumer-supply = "vddio_pex_ctl";
+								regulator-consumer-device = "tegra-pcie";
+							};
 						};
 					};
 
-					ldousb_reg: ldousb {
+					ldousb {
 						regulator-name = "avdd-usb";
+						regulator-min-microvolt = <3300000>;
+						regulator-max-microvolt = <3300000>;
 						regulator-always-on;
 						regulator-boot-on;
 
 						consumers {
+							c1 {
+								regulator-consumer-supply = "pwrdet_pex_ctl";
+							};
 							c2 {
 								regulator-consumer-supply = "avdd_usb";
 								regulator-consumer-device = "tegra-udc.0";
@@ -627,6 +724,20 @@
 								regulator-consumer-supply = "avdd_usb";
 								regulator-consumer-device = "tegra-ehci.2";
 							};
+							c6 {
+								regulator-consumer-supply = "hvdd_usb";
+								regulator-consumer-device = "tegra-xhci";
+
+							};
+							c7 {
+								regulator-consumer-supply = "hvdd_pex";
+								regulator-consumer-device = "tegra-pcie";
+							};
+							c8 {
+								regulator-consumer-supply = "hvdd_pex_pll_e";
+								regulator-consumer-device = "tegra-pcie";
+							};
+
 						};
 					};
 					regen1 {
@@ -670,13 +781,13 @@
 
 	i2c@7000c000 {
 
-		battery-gauge@62 {
+		cw201x@62 {
 			compatible = "cw,cw201x";
 			reg = <0x62>;
 			status = "disabled";
 			interrupt-parent = <&gpio>;
 			interrupts = <TEGRA_GPIO(Q, 5) 0x0>;		/* gpio PQ5 */
-			tz-name = "Battery";
+			tz-name = "battery-temp";
 			alert-threshold = <0>;
 			profile-tbl = <0x15 0x7E 0x64 0x63 0x60 0x5A 0x53 0x50
 				0x4E 0x4B 0x49 0x46 0x48 0x43 0x2F 0x22
@@ -688,8 +799,8 @@
 				0x2F 0x7D 0x72 0xA5 0xB5 0xC1 0x5B 0x1D>;
 		};
 
-		battery-charger@6b {
-			compatible = "ti,bq2419x-st8";
+		bq2419x: bq2419x@6b {
+			compatible = "ti,bq2419x";
 			reg = <0x6b>;
 
 			interrupt-parent = <&gpio>;

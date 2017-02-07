@@ -2317,6 +2317,8 @@ source "drivers/cpuidle/Kconfig"
 
 source "drivers/cpuquiet/Kconfig"
 
+source "drivers/edp/Kconfig"
+
 endmenu
 
 menu "Floating point emulation"
