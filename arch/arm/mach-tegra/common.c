@@ -186,6 +186,27 @@ struct device tegra_vpr_cma_dev;
 #define CREATE_TRACE_POINTS
 #include <trace/events/nvsecurity.h>
 
+static inline phys_addr_t memblock_end_of_4G(phys_addr_t size)
+{
+	return memblock_find_in_range(0, SZ_4G-1, size, PAGE_SIZE);
+}
+static int tegra_update_resize_cfg(phys_addr_t base , size_t size)
+{
+	int err = 0;
+#ifdef CONFIG_TRUSTED_LITTLE_KERNEL
+	err = gk20a_do_idle();
+	if (!err) {
+		/* Config VPR_BOM/_SIZE in MC */
+		err = te_set_vpr_params((void *)(uintptr_t)base, size);
+		gk20a_do_unidle();
+	}
+#endif
+	return err;
+}
+struct dma_resize_notifier_ops vpr_dev_ops = {
+	.resize = tegra_update_resize_cfg
+};
+
 u32 notrace tegra_read_cycle(void)
 {
 	u32 cycle_count;
@@ -478,6 +499,8 @@ static __initdata struct tegra_clk_init_table tegra12x_clk_init_table[] = {
 	{ "tsensor",	"clk_m",	500000,		false },
 #endif
 	{ "pll_d",	NULL,		0,		true },
+	{ "dsialp",	"pll_p",	70000000,       false },
+	{ "dsiblp",     "pll_p",        70000000,       false },
 	{ NULL,		NULL,		0,		0},
 };
 static __initdata struct tegra_clk_init_table tegra12x_cbus_init_table[] = {
@@ -1124,6 +1147,7 @@ int tegra_get_sku_override(void)
 	return sku_override;
 }
 
+#ifndef CONFIG_NVMAP_USE_CMA_FOR_CARVEOUT
 static int __init tegra_vpr_arg(char *options)
 {
 	char *p = options;
@@ -1136,6 +1160,7 @@ static int __init tegra_vpr_arg(char *options)
 	return 0;
 }
 early_param("vpr", tegra_vpr_arg);
+#endif
 
 static int __init tegra_tsec_arg(char *options)
 {
@@ -1764,6 +1789,75 @@ void __init tegra_protected_aperture_init(unsigned long aperture)
 	pr_info("Enabling Tegra protected aperture at 0x%08lx\n", aperture);
 	writel(aperture, mc_base + MC_SECURITY_CFG2);
 }
+static void __tegra_move_framebuffer_kmap(phys_addr_t to, phys_addr_t from,
+	size_t size)
+{
+	size_t i;
+	BUG_ON(!pfn_valid(page_to_pfn(phys_to_page(from))));
+	for (i = 0; i < size; i += PAGE_SIZE) {
+		struct page *from_page = phys_to_page(from + i);
+		void *from_virt = kmap(from_page);
+		struct page *to_page = phys_to_page(to + i);
+		void *to_virt = kmap(to_page);
+		memcpy(to_virt, from_virt, PAGE_SIZE);
+		kunmap(from_virt);
+		kunmap(to_virt);
+	}
+}
+static void __tegra_move_framebuffer_ioremap(struct platform_device *pdev,
+	phys_addr_t to, phys_addr_t from,
+	size_t size)
+{
+	struct page *page;
+	void __iomem *to_io;
+	void *from_virt;
+	unsigned long i;
+
+	to_io = ioremap_wc(to, size);
+	if (!from)
+		pr_err("%s: Failed to map target framebuffer\n", __func__);
+		return;
+	}
+
+	if (pfn_valid(page_to_pfn(phys_to_page(from)))) {
+	
+		for (i = 0 ; i < size; i += PAGE_SIZE) {
+			page = phys_to_page(from + i);
+			from_virt = kmap(page);
+			memcpy(to_io + i, from_virt, PAGE_SIZE);
+			kunmap(page);
+		}
+	} else {
+		void __iomem *from_io = ioremap_wc(from, size);
+	if (!to_io) {
+		pr_err("%s: Failed to map target framebuffer\n", __func__);
+		return;
+	}
+
+	if (pfn_valid(page_to_pfn(phys_to_page(from)))) {
+		for (i = 0 ; i < size; i += PAGE_SIZE) {
+			page = phys_to_page(from + i);
+			from_virt = kmap(page);
+			memcpy(to_io + i, from_virt, PAGE_SIZE);
+			kunmap(page);
+		}
+	} else {
+		void __iomem *from_io = ioremap_wc(from, size);
+		if (!from_io) {
+			pr_err("%s: Failed to map source framebuffer\n",
+				__func__);
+			goto out;
+		}
+
+		for (i = 0; i < size; i += 4)
+			writel_relaxed(readl_relaxed(from_io + i), to_io + i);
+		dmb();
+		iounmap(from_io);
+	}
+
+out:
+	iounmap(to_io);
+}
 
 /*
  * Due to conflicting restrictions on the placement of the framebuffer,
@@ -1777,44 +1871,15 @@ void __tegra_move_framebuffer(struct platform_device *pdev,
 	phys_addr_t to, phys_addr_t from,
 	size_t size)
 {
-	struct page *page;
-	void __iomem *to_io;
-	void *from_virt;
-	unsigned long i;
-
 	BUG_ON(PAGE_ALIGN((unsigned long)to) != (unsigned long)to);
 	BUG_ON(PAGE_ALIGN(from) != from);
 	BUG_ON(PAGE_ALIGN(size) != size);
-
-	to_io = ioremap(to, size);
-	if (!to_io) {
-		pr_err("%s: Failed to map target framebuffer\n", __func__);
+	if (!from)
 		return;
-	}
-
-	if (from && pfn_valid(page_to_pfn(phys_to_page(from)))) {
-		for (i = 0 ; i < size; i += PAGE_SIZE) {
-			page = phys_to_page(from + i);
-			from_virt = kmap(page);
-			memcpy(to_io + i, from_virt, PAGE_SIZE);
-			kunmap(page);
-		}
-	} else if (from) {
-		void __iomem *from_io = ioremap(from, size);
-		if (!from_io) {
-			pr_err("%s: Failed to map source framebuffer\n",
-				__func__);
-			goto out;
-		}
-
-		for (i = 0; i < size; i += 4)
-			writel(readl(from_io + i), to_io + i);
-
-		iounmap(from_io);
-	}
-
-out:
-	iounmap(to_io);
+	if (pfn_valid(page_to_pfn(phys_to_page(to))))
+		__tegra_move_framebuffer_kmap(to, from, size);
+	else
+		__tegra_move_framebuffer_ioremap(pdev, to, from, size);
 }
 
 void __tegra_clear_framebuffer(struct platform_device *pdev,
@@ -1826,7 +1891,7 @@ void __tegra_clear_framebuffer(struct platform_device *pdev,
 	BUG_ON(PAGE_ALIGN((unsigned long)to) != (unsigned long)to);
 	BUG_ON(PAGE_ALIGN(size) != size);
 
-	to_io = ioremap(to, size);
+	to_io = ioremap_wc(to, size);
 	if (!to_io) {
 		pr_err("%s: Failed to map target framebuffer\n", __func__);
 		return;
@@ -1837,11 +1902,41 @@ void __tegra_clear_framebuffer(struct platform_device *pdev,
 			memset(to_io + i, 0, PAGE_SIZE);
 	} else {
 		for (i = 0; i < size; i += 4)
-			writel(0, to_io + i);
+			writel_relaxed(0, to_io + i);
+		dmb();
 	}
 
 	iounmap(to_io);
 }
+
+#ifdef CONFIG_PSTORE_RAM
+static struct ramoops_platform_data ramoops_data;
+static struct platform_device ramoops_dev  = {
+	.name = "ramoops",
+	.dev = {
+		.platform_data = &ramoops_data,
+	},
+};
+static void __init tegra_reserve_ramoops_memory(unsigned long reserve_size)
+{
+	ramoops_data.mem_size = reserve_size;
+	ramoops_data.mem_address = memblock_end_of_4G(reserve_size);
+	ramoops_data.console_size = reserve_size - FTRACE_MEM_SIZE;
+	ramoops_data.ftrace_size = FTRACE_MEM_SIZE;
+	ramoops_data.dump_oops = 1;
+	memblock_remove(ramoops_data.mem_address, ramoops_data.mem_size);
+}
+static int __init tegra_register_ramoops_device(void)
+{
+	int ret = platform_device_register(&ramoops_dev);
+	if (ret) {
+		pr_info("Unable to register ramoops platform device\n");
+		return ret;
+	}
+	return ret;
+}
+core_initcall(tegra_register_ramoops_device);
+
 
 void __init tegra_reserve(unsigned long carveout_size, unsigned long fb_size,
 	unsigned long fb2_size)
@@ -1854,8 +1949,7 @@ void __init tegra_reserve(unsigned long carveout_size, unsigned long fb_size,
 		 * Place the carveout below the 4 GB physical address limit
 		 * because IOVAs are only 32 bit wide.
 		 */
-		BUG_ON(memblock_end_of_4G() == 0);
-		tegra_carveout_start = memblock_end_of_4G() - carveout_size;
+		tegra_carveout_start = memblock_end_of_4G(carveout_size);
 		if (memblock_remove(tegra_carveout_start, carveout_size)) {
 			pr_err("Failed to remove carveout %08lx@%08llx "
 				"from memory map\n",
@@ -1872,8 +1966,12 @@ void __init tegra_reserve(unsigned long carveout_size, unsigned long fb_size,
 		 * Place fb2 below the 4 GB physical address limit because
 		 * IOVAs are only 32 bit wide.
 		 */
-		BUG_ON(memblock_end_of_4G() == 0);
-		tegra_fb2_start = memblock_end_of_4G() - fb2_size;
+#if IS_ENABLED(CONFIG_ADF_TEGRA)
+		tegra_fb2_start = memblock_alloc_base(fb2_size, PAGE_SIZE,
+					SZ_4G);
+		tegra_fb2_size = fb2_size;
+#else
+		tegra_fb2_start = memblock_end_of_4G(fb2_size);
 		if (memblock_remove(tegra_fb2_start, fb2_size)) {
 			pr_err("Failed to remove second framebuffer "
 				"%08lx@%08llx from memory map\n",
@@ -1882,6 +1980,7 @@ void __init tegra_reserve(unsigned long carveout_size, unsigned long fb_size,
 			tegra_fb2_size = 0;
 		} else
 			tegra_fb2_size = fb2_size;
+#endif
 	}
 
 	if (fb_size) {
@@ -1889,8 +1988,12 @@ void __init tegra_reserve(unsigned long carveout_size, unsigned long fb_size,
 		 * Place fb below the 4 GB physical address limit because
 		 * IOVAs are only 32 bit wide.
 		 */
-		BUG_ON(memblock_end_of_4G() == 0);
-		tegra_fb_start = memblock_end_of_4G() - fb_size;
+#if IS_ENABLED(CONFIG_ADF_TEGRA)
+		tegra_fb_start = memblock_alloc_base(fb_size, PAGE_SIZE,
+				SZ_4G);
+		tegra_fb_size = fb_size;
+#else
+				tegra_fb_start = memblock_end_of_4G(fb_size);
 		if (memblock_remove(tegra_fb_start, fb_size)) {
 			pr_err("Failed to remove framebuffer %08lx@%08llx "
 				"from memory map\n",
@@ -1899,6 +2002,7 @@ void __init tegra_reserve(unsigned long carveout_size, unsigned long fb_size,
 			tegra_fb_size = 0;
 		} else
 			tegra_fb_size = fb_size;
+#endif
 	}
 
 	if (tegra_cpu_is_asim()) {
@@ -2118,6 +2222,10 @@ void __init tegra_reserve(unsigned long carveout_size, unsigned long fb_size,
 	}
 #endif
 
+#ifdef CONFIG_PSTORE_RAM
+	tegra_reserve_ramoops_memory(RAMOOPS_MEM_SIZE);
+#endif
+
 #ifdef CONFIG_NVMAP_USE_CMA_FOR_CARVEOUT
 	/* Keep these at the end */
 	if (carveout_size) {
@@ -2169,10 +2277,14 @@ void __init tegra_reserve_ramoops_memory(unsigned long reserve_size)
 	memblock_reserve(ramoops_data.mem_address, ramoops_data.mem_size);
 }
 
-static void __init tegra_register_ramoops_device()
+static int __init tegra_register_ramoops_device(void)
 {
-	if (platform_device_register(&ramoops_dev))
+	int ret = platform_device_register(&ramoops_dev);
+	if (ret) {
 		pr_info("Unable to register ramoops platform device\n");
+		return ret;
+	}
+	return ret;
 }
 core_initcall(tegra_register_ramoops_device);
 #endif
@@ -2254,6 +2366,9 @@ static const char * __init tegra_get_family(void)
 		break;
 	case TEGRA_CHIPID_TEGRA12:
 		cid = 12;
+		break;
+	case TEGRA_CHIPID_TEGRA13:
+		cid = 13;
 		break;
 	case TEGRA_CHIPID_TEGRA14:
 		cid = 14;
