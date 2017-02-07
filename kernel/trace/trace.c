@@ -427,6 +427,7 @@ int __trace_puts(unsigned long ip, const char *str, int size)
 
 	pc = preempt_count();
 
+
 	if (unlikely(tracing_selftest_running || tracing_disabled))
 		return 0;
 
@@ -1036,13 +1037,13 @@ update_max_tr_single(struct trace_array *tr, struct task_struct *tsk, int cpu)
 }
 #endif /* CONFIG_TRACER_MAX_TRACE */
 
-static int default_wait_pipe(struct trace_iterator *iter)
+static void default_wait_pipe(struct trace_iterator *iter)
 {
 	/* Iterators are static, they should be filled or empty */
 	if (trace_buffer_iter(iter, iter->cpu_file))
-		return 0;
+		return;
 
-	return ring_buffer_wait(iter->trace_buffer->buffer, iter->cpu_file);
+	ring_buffer_wait(iter->trace_buffer->buffer, iter->cpu_file);
 }
 
 #ifdef CONFIG_FTRACE_STARTUP_TEST
@@ -1316,6 +1317,7 @@ void tracing_start(void)
 
 	arch_spin_unlock(&ftrace_max_lock);
 
+	ftrace_start();
  out:
 	raw_spin_unlock_irqrestore(&global_trace.start_lock, flags);
 }
@@ -1362,6 +1364,7 @@ void tracing_stop(void)
 	struct ring_buffer *buffer;
 	unsigned long flags;
 
+	ftrace_stop();
 	raw_spin_lock_irqsave(&global_trace.start_lock, flags);
 	if (global_trace.stop_count++)
 		goto out;
@@ -1408,12 +1411,12 @@ static void tracing_stop_tr(struct trace_array *tr)
 
 void trace_stop_cmdline_recording(void);
 
-static int trace_save_cmdline(struct task_struct *tsk)
+static void trace_save_cmdline(struct task_struct *tsk)
 {
 	unsigned pid, idx;
 
 	if (!tsk->pid || unlikely(tsk->pid > PID_MAX_DEFAULT))
-		return 0;
+		return;
 
 	/*
 	 * It's not the end of the world if we don't get
@@ -1422,7 +1425,7 @@ static int trace_save_cmdline(struct task_struct *tsk)
 	 * so if we miss here, then better luck next time.
 	 */
 	if (!arch_spin_trylock(&trace_cmdline_lock))
-		return 0;
+		return;
 
 	idx = map_pid_to_cmdline[tsk->pid];
 	if (idx == NO_CMDLINE_MAP) {
@@ -1448,8 +1451,6 @@ static int trace_save_cmdline(struct task_struct *tsk)
 	saved_tgids[idx] = tsk->tgid;
 
 	arch_spin_unlock(&trace_cmdline_lock);
-
-	return 1;
 }
 
 void trace_find_cmdline(int pid, char comm[])
@@ -1510,8 +1511,9 @@ void tracing_record_cmdline(struct task_struct *tsk)
 	if (!__this_cpu_read(trace_cmdline_save))
 		return;
 
-	if (trace_save_cmdline(tsk))
-		__this_cpu_write(trace_cmdline_save, false);
+	__this_cpu_write(trace_cmdline_save, false);
+
+	trace_save_cmdline(tsk);
 }
 
 void
@@ -2903,7 +2905,7 @@ static int s_show(struct seq_file *m, void *v)
  */
 static inline int tracing_get_cpu(struct inode *inode)
 {
-	if (inode->i_cdev) /* See trace_create_cpu_file() */
+	if ((unsigned long)inode->i_cdev <= NR_CPUS) /* See trace_create_cpu_file() */
 		return (long)inode->i_cdev - 1;
 	return RING_BUFFER_ALL_CPUS;
 }
@@ -3017,11 +3019,6 @@ int tracing_open_generic(struct inode *inode, struct file *filp)
 
 	filp->private_data = inode->i_private;
 	return 0;
-}
-
-bool tracing_is_disabled(void)
-{
-	return (tracing_disabled) ? true : false;
 }
 
 /*
@@ -4158,19 +4155,17 @@ tracing_poll_pipe(struct file *filp, poll_table *poll_table)
  *
  *     Anyway, this is really very primitive wakeup.
  */
-int poll_wait_pipe(struct trace_iterator *iter)
+void poll_wait_pipe(struct trace_iterator *iter)
 {
 	set_current_state(TASK_INTERRUPTIBLE);
 	/* sleep for 100 msecs, and try again. */
 	schedule_timeout(HZ / 10);
-	return 0;
 }
 
 /* Must be called with trace_types_lock mutex held. */
 static int tracing_wait_pipe(struct file *filp)
 {
 	struct trace_iterator *iter = filp->private_data;
-	int ret;
 
 	while (trace_empty(iter)) {
 
@@ -4180,12 +4175,9 @@ static int tracing_wait_pipe(struct file *filp)
 
 		mutex_unlock(&iter->mutex);
 
-		ret = iter->trace->wait_pipe(iter);
+		iter->trace->wait_pipe(iter);
 
 		mutex_lock(&iter->mutex);
-
-		if (ret)
-			return ret;
 
 		if (signal_pending(current))
 			return -EINTR;
@@ -4324,8 +4316,6 @@ static void tracing_spd_release_pipe(struct splice_pipe_desc *spd,
 
 static const struct pipe_buf_operations tracing_pipe_buf_ops = {
 	.can_merge		= 0,
-	.map			= generic_pipe_buf_map,
-	.unmap			= generic_pipe_buf_unmap,
 	.confirm		= generic_pipe_buf_confirm,
 	.release		= tracing_pipe_buf_release,
 	.steal			= generic_pipe_buf_steal,
@@ -5120,12 +5110,8 @@ tracing_buffers_read(struct file *filp, char __user *ubuf,
 				goto out_unlock;
 			}
 			mutex_unlock(&trace_types_lock);
-			ret = iter->trace->wait_pipe(iter);
+			iter->trace->wait_pipe(iter);
 			mutex_lock(&trace_types_lock);
-			if (ret) {
-				size = ret;
-				goto out_unlock;
-			}
 			if (signal_pending(current)) {
 				size = -EINTR;
 				goto out_unlock;
@@ -5206,8 +5192,6 @@ static void buffer_pipe_buf_get(struct pipe_inode_info *pipe,
 /* Pipe buffer operations for a buffer. */
 static const struct pipe_buf_operations buffer_pipe_buf_ops = {
 	.can_merge		= 0,
-	.map			= generic_pipe_buf_map,
-	.unmap			= generic_pipe_buf_unmap,
 	.confirm		= generic_pipe_buf_confirm,
 	.release		= buffer_pipe_buf_release,
 	.steal			= generic_pipe_buf_steal,
@@ -5337,10 +5321,8 @@ tracing_buffers_splice_read(struct file *file, loff_t *ppos,
 			goto out;
 		}
 		mutex_unlock(&trace_types_lock);
-		ret = iter->trace->wait_pipe(iter);
+		iter->trace->wait_pipe(iter);
 		mutex_lock(&trace_types_lock);
-		if (ret)
-			goto out;
 		if (signal_pending(current)) {
 			ret = -EINTR;
 			goto out;
@@ -5997,8 +5979,6 @@ allocate_trace_buffer(struct trace_array *tr, struct trace_buffer *buf, int size
 	enum ring_buffer_flags rb_flags;
 
 	rb_flags = trace_flags & TRACE_ITER_OVERWRITE ? RB_FL_OVERWRITE : 0;
-
-	buf->tr = tr;
 
 	buf->buffer = ring_buffer_alloc(size, rb_flags);
 	if (!buf->buffer)
