@@ -1069,3 +1069,4 @@ int perf_ftrace_event_register(struct ftrace_event_call *call,
 #endif
 
 #endif /* _LINUX_KERNEL_TRACE_H */
+
