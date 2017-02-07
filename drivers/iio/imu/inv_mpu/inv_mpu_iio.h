@@ -1,5 +1,6 @@
 /*
 * Copyright (C) 2012 Invensense, Inc.
+* Copyright (C) 2016 XiaoMi, Inc.
 *
 * This software is licensed under the terms of the GNU General Public
 * License version 2, as published by the Free Software Foundation, and
@@ -20,7 +21,7 @@
 #include <linux/spinlock.h>
 #include <linux/iio/iio.h>
 #include <linux/iio/buffer.h>
-#include <linux/mpu_iio.h>
+#include <linux/mpu.h>
 
 #include "dmpKey.h"
 
