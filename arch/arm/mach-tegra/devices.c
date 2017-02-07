@@ -33,7 +33,7 @@
 #include <linux/tegra-soc.h>
 #include <mach/irqs.h>
 #include <linux/usb/tegra_usb_phy.h>
-#include <mach/tegra_smmu.h>
+#include <linux/tegra_smmu.h>
 #include <mach/tegra-swgid.h>
 #include <linux/dma-contiguous.h>
 
@@ -72,6 +72,7 @@ struct platform_device tegra_emc_device = {
 	.num_resources	= ARRAY_SIZE(emc_resource),
 };
 
+#if !defined(CONFIG_ARCH_TEGRA_21x_SOC)
 static struct resource gpio_resource[] = {
 	[0] = {
 		.start	= TEGRA_GPIO_BASE,
@@ -1077,7 +1078,9 @@ struct platform_device tegra_nor_device = {
 		.coherent_dma_mask = 0xffffffff,
 	},
 };
+#endif
 
+#if !defined(CONFIG_ARCH_TEGRA_21x_SOC)
 static struct resource dtv_resource[] = {
 	[0] = {
 		.start  = TEGRA_DTV_BASE,
@@ -1101,6 +1104,7 @@ struct platform_device tegra_dtv_device = {
 		.coherent_dma_mask = 0xffffffff,
 	},
 };
+#endif
 
 static struct resource sdhci_resource1[] = {
 	[0] = {
@@ -1115,6 +1119,7 @@ static struct resource sdhci_resource1[] = {
 	},
 };
 
+#if !defined(CONFIG_ARCH_TEGRA_21x_SOC)
 static struct resource sdhci_resource2[] = {
 	[0] = {
 		.start	= INT_SDMMC2,
@@ -1127,6 +1132,7 @@ static struct resource sdhci_resource2[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 };
+#endif
 
 static struct resource sdhci_resource3[] = {
 	[0] = {
@@ -1174,12 +1180,14 @@ struct platform_device tegra_sdhci_device1 = {
 	.num_resources	= ARRAY_SIZE(sdhci_resource1),
 };
 
+#if !defined(CONFIG_ARCH_TEGRA_21x_SOC)
 struct platform_device tegra_sdhci_device2 = {
 	.name		= "sdhci-tegra",
 	.id		= 1,
 	.resource	= sdhci_resource2,
 	.num_resources	= ARRAY_SIZE(sdhci_resource2),
 };
+#endif
 
 struct platform_device tegra_sdhci_device3 = {
 	.name		= "sdhci-tegra",
@@ -1221,6 +1229,7 @@ static struct resource tegra_usb2_resources[] = {
 	},
 };
 
+#if !defined(CONFIG_ARCH_TEGRA_21x_SOC)
 static struct resource tegra_usb3_resources[] = {
 	[0] = {
 		.start	= TEGRA_USB3_BASE,
@@ -1233,6 +1242,7 @@ static struct resource tegra_usb3_resources[] = {
 		.flags	= IORESOURCE_IRQ,
 	},
 };
+#endif
 
 #if defined(CONFIG_ARCH_TEGRA_11x_SOC) || defined(CONFIG_ARCH_TEGRA_12x_SOC)
 static struct resource tegra_xusb_resources[] = {
@@ -1289,6 +1299,7 @@ struct platform_device tegra_ehci2_device = {
 	.num_resources = ARRAY_SIZE(tegra_usb2_resources),
 };
 
+#if !defined(CONFIG_ARCH_TEGRA_21x_SOC)
 struct platform_device tegra_ehci3_device = {
 	.name	= "tegra-ehci",
 	.id	= 2,
@@ -1299,6 +1310,7 @@ struct platform_device tegra_ehci3_device = {
 	.resource = tegra_usb3_resources,
 	.num_resources = ARRAY_SIZE(tegra_usb3_resources),
 };
+#endif
 
 static struct resource tegra_pmu_resources[] = {
 	[0] = {
@@ -1857,11 +1869,90 @@ static struct resource dmic_resource1[] = {
 	}
 };
 
+struct platform_device tegra_dmic_device0 = {
+	.name = "tegra210-dmic",
+	.id = 0,
+	.resource      = tegra_dmic_resource0,
+	.num_resources = ARRAY_SIZE(tegra_dmic_resource0),
+};
+
+static struct resource tegra_dmic_resource1[] = {
+	[0] = {
+		.start = TEGRA_DMIC2_BASE,
+		.end   = TEGRA_DMIC2_BASE + TEGRA_DMIC2_SIZE - 1,
+		.flags = IORESOURCE_MEM
+	}
+};
+
 struct platform_device tegra_dmic_device1 = {
-	.name = "tegra-dmic",
+	.name = "tegra210-dmic",
 	.id = 1,
-	.resource      = dmic_resource1,
-	.num_resources = ARRAY_SIZE(dmic_resource1),
+	.resource      = tegra_dmic_resource1,
+	.num_resources = ARRAY_SIZE(tegra_dmic_resource1),
+};
+
+static struct resource tegra_dmic_resource2[] = {
+	[0] = {
+		.start = TEGRA_DMIC3_BASE,
+		.end   = TEGRA_DMIC3_BASE + TEGRA_DMIC3_SIZE - 1,
+		.flags = IORESOURCE_MEM
+	}
+};
+
+struct platform_device tegra_dmic_device2 = {
+	.name = "tegra210-dmic",
+	.id = 2,
+	.resource      = tegra_dmic_resource2,
+	.num_resources = ARRAY_SIZE(tegra_dmic_resource2),
+};
+
+static struct resource tegra_spkprot_resource0[] = {
+	[0] = {
+		.start = TEGRA_SPKPROT1_BASE,
+		.end   = TEGRA_SPKPROT1_BASE + TEGRA_SPKPROT1_SIZE - 1,
+		.flags = IORESOURCE_MEM
+	}
+};
+struct platform_device tegra_spkprot_device0 = {
+	.name = "tegra210-spkprot",
+	.id = 0,
+	.resource      = tegra_spkprot_resource0,
+	.num_resources = ARRAY_SIZE(tegra_spkprot_resource0),
+};
+
+static struct resource tegra_adma_resource[] = {
+	[0] = {
+		.start = TEGRA_ADMA_BASE,
+		.end   = TEGRA_ADMA_BASE + TEGRA_ADMA_SIZE - 1,
+		.flags = IORESOURCE_MEM
+	}
+};
+
+static u64 tegra_adma_dmamask = DMA_BIT_MASK(64);
+struct platform_device tegra_adma_device = {
+	.name     = "tegra210-adma",
+	.id       = -1,
+	.resource = tegra_adma_resource,
+	.num_resources = ARRAY_SIZE(tegra_adma_resource),
+	.dev = {
+		.dma_mask = &tegra_adma_dmamask,
+		.coherent_dma_mask = DMA_BIT_MASK(64)
+	}
+};
+
+static struct resource tegra_admaif_resource[] = {
+	[0] = {
+		.start = TEGRA_ADMAIF_BASE,
+		.end   = TEGRA_ADMAIF_BASE + TEGRA_ADMAIF_SIZE - 1,
+		.flags = IORESOURCE_MEM
+	}
+};
+
+struct platform_device tegra_admaif_device = {
+	.name = "tegra210-admaif",
+	.id   = -1,
+	.resource      = tegra_admaif_resource,
+	.num_resources = ARRAY_SIZE(tegra_admaif_resource),
 };
 #endif
 
@@ -2762,6 +2853,7 @@ struct platform_device tegra_disp1_device = {
 	.num_resources	= ARRAY_SIZE(tegra_disp1_resources),
 };
 
+#if !defined(CONFIG_ARCH_TEGRA_21x_SOC)
 static struct resource tegra_disp2_resources[] = {
 	{
 		.name	= "irq",
@@ -2828,11 +2920,24 @@ struct platform_device tegra_cec_device = {
 
 #ifdef CONFIG_ARCH_TEGRA_HAS_CL_DVFS
 static struct resource cl_dvfs_resource[] = {
+#ifndef CONFIG_ARCH_TEGRA_13x_SOC
 	[0] = {
 		.start	= TEGRA_CL_DVFS_BASE,
 		.end	= TEGRA_CL_DVFS_BASE + TEGRA_CL_DVFS_SIZE-1,
 		.flags	= IORESOURCE_MEM,
-	}
+	},
+#else
+	[0] = {
+		.start	= TEGRA_CLK13_RESET_BASE + 0x84,
+		.end	= TEGRA_CLK13_RESET_BASE + 0x84 + TEGRA_CL_DVFS_SIZE-1,
+		.flags	= IORESOURCE_MEM,
+	},
+	[1] = {
+		.start	= TEGRA_CL_DVFS_BASE,
+		.end	= TEGRA_CL_DVFS_BASE + TEGRA_CL_DVFS_SIZE-1,
+		.flags	= IORESOURCE_MEM,
+	},
+#endif
 };
 
 struct platform_device tegra_cl_dvfs_device = {
