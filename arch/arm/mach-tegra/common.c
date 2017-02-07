@@ -2169,7 +2169,7 @@ void __init tegra_reserve_ramoops_memory(unsigned long reserve_size)
 	memblock_reserve(ramoops_data.mem_address, ramoops_data.mem_size);
 }
 
-static int __init tegra_register_ramoops_device()
+static void __init tegra_register_ramoops_device()
 {
 	if (platform_device_register(&ramoops_dev))
 		pr_info("Unable to register ramoops platform device\n");
