@@ -43,6 +43,7 @@
 #include <linux/skbuff.h>
 #include <linux/ti_wilink_st.h>
 #include <linux/regulator/consumer.h>
+#include <linux/regulator/machine.h>
 #include <linux/smb349-charger.h>
 #include <linux/max17048_battery.h>
 #include <linux/leds.h>
@@ -65,6 +66,9 @@
 #include <linux/platform_data/tegra_usb_modem_power.h>
 #include <linux/platform_data/tegra_ahci.h>
 #include <linux/irqchip/tegra.h>
+#include <linux/pinctrl/pinctrl.h>
+#include <linux/pinctrl/consumer.h>
+#include <linux/pinctrl/pinconf-tegra.h>
 #include <sound/rt5670.h>
 
 #include <mach/irqs.h>
@@ -73,6 +77,7 @@
 #include <mach/io_dpd.h>
 #include <mach/i2s.h>
 #include <mach/isomgr.h>
+#include <linux/platform/tegra/isomgr.h>
 #include <mach/tegra_asoc_pdata.h>
 #include <mach/dc.h>
 #include <mach/tegra_usb_pad_ctrl.h>
@@ -91,10 +96,11 @@
 #include "board.h"
 #include "board-ardbeg.h"
 #include "board-common.h"
+#include "board-panel.h"
 #include "board-touch-raydium.h"
 #include "board-touch-maxim_sti.h"
-#include "clock.h"
-#include "common.h"
+#include <linux/platform/tegra/clock.h>
+#include <linux/platform/tegra/common.h>
 #include "devices.h"
 #include "gpio-names.h"
 #include "iomap.h"
@@ -105,6 +111,59 @@
 #define BQ27520_INT_SUPPORT
 
 static struct board_info board_info, display_board_info;
+
+#ifndef CONFIG_USE_OF
+static struct resource ardbeg_bluedroid_pm_resources[] = {
+	[0] = {
+		.name   = "shutdown_gpio",
+		.start  = TEGRA_GPIO_PR1,
+		.end    = TEGRA_GPIO_PR1,
+		.flags  = IORESOURCE_IO,
+	},
+	[1] = {
+		.name = "host_wake",
+		.flags  = IORESOURCE_IRQ | IORESOURCE_IRQ_HIGHEDGE,
+	},
+	[2] = {
+		.name = "gpio_ext_wake",
+		.start  = TEGRA_GPIO_PEE1,
+		.end    = TEGRA_GPIO_PEE1,
+		.flags  = IORESOURCE_IO,
+	},
+	[3] = {
+		.name = "gpio_host_wake",
+		.start  = TEGRA_GPIO_PU6,
+		.end    = TEGRA_GPIO_PU6,
+		.flags  = IORESOURCE_IO,
+	},
+	[4] = {
+		.name = "reset_gpio",
+		.start  = TEGRA_GPIO_PX1,
+		.end    = TEGRA_GPIO_PX1,
+		.flags  = IORESOURCE_IO,
+	},
+};
+
+static struct platform_device ardbeg_bluedroid_pm_device = {
+	.name = "bluedroid_pm",
+	.id             = 0,
+	.num_resources  = ARRAY_SIZE(ardbeg_bluedroid_pm_resources),
+	.resource       = ardbeg_bluedroid_pm_resources,
+};
+
+static noinline void __init ardbeg_setup_bluedroid_pm(void)
+{
+	struct board_info board_info;
+
+	tegra_get_board_info(&board_info);
+	if (board_info.board_id == BOARD_E2141)
+		ardbeg_bluedroid_pm_resources[0].name = "";
+
+	ardbeg_bluedroid_pm_resources[1].start =
+		ardbeg_bluedroid_pm_resources[1].end =
+				gpio_to_irq(TEGRA_GPIO_PU6);
+	platform_device_register(&ardbeg_bluedroid_pm_device);
+};
 
 static struct rt5670_platform_data rt5671_pdata = {
 	.jd_mode = 2,
@@ -166,6 +225,28 @@ static void lp5521_enable(bool state)
 {
 	gpio_set_value(LP5521_CHIP_EN_GPIO, !!state);
 }
+
+static struct i2c_board_info __initdata rt5639_board_info = {
+	I2C_BOARD_INFO("rt5639", 0x1c),
+};
+
+static struct max98090_eq_cfg max98090_eq_cfg[] = {
+};
+
+static struct max98090_pdata norrin_max98090_pdata = {
+	/* Equalizer Configuration */
+	.eq_cfg = max98090_eq_cfg,
+	.eq_cfgcnt = ARRAY_SIZE(max98090_eq_cfg),
+
+	/* Microphone Configuration */
+	.digmic_left_mode = 1,
+	.digmic_right_mode = 1,
+};
+
+static struct i2c_board_info __initdata max98090_board_info = {
+	I2C_BOARD_INFO("max98090", 0x10),
+	.platform_data	= &norrin_max98090_pdata,
+};
 
 static struct lp55xx_platform_data lp5521_platform_data = {
 	.led_config             = lp5521_led_config,
@@ -324,9 +405,18 @@ static void ardbeg_i2c_init(void)
 
 	i2c_register_board_info(0, audio_board_info, ARRAY_SIZE(audio_board_info));
 
+	if(!of_machine_is_compatible("nvidia,green-arrow"))
+	{
+		if (board_info.board_id == BOARD_PM374) {
+			i2c_register_board_info(0, &max98090_board_info, 1);
+		} else if (board_info.board_id != BOARD_PM359)
+			i2c_register_board_info(0, &rt5639_board_info, 1);
+	}
+
 	if (board_info.board_id == BOARD_PM359 ||
-			board_info.board_id == BOARD_PM358 ||
-			board_info.board_id == BOARD_PM363) {
+		board_info.board_id == BOARD_PM358 ||
+		board_info.board_id == BOARD_PM363 ||
+		board_info.board_id == BOARD_PM374) {
 		i2c_keyboard_board_info.irq = gpio_to_irq(I2C_KB_IRQ);
 		i2c_register_board_info(1, &i2c_keyboard_board_info , 1);
 
@@ -428,6 +518,17 @@ static void __init ardbeg_uart_init(void)
 		tegra_pinmux_set_pullupdown(TEGRA_PINGROUP_GPIO_PB0,
 						TEGRA_PUPD_PULL_DOWN);
 	}
+
+	if (board_info.board_id == BOARD_E2141) {
+		ardbeg_audio_pdata_rt5639.i2s_param[HIFI_CODEC].audio_port_id
+				= 0;
+		ardbeg_audio_pdata_rt5639.i2s_param[BT_SCO].audio_port_id = 1;
+	}
+	ardbeg_audio_pdata_rt5639.codec_name = "rt5639.0-001c";
+	ardbeg_audio_pdata_rt5639.codec_dai_name = "rt5639-aif1";
+
+	norrin_audio_pdata_max98090.codec_name = "max98090.0-0010";
+	norrin_audio_pdata_max98090.codec_dai_name = "HiFi";
 }
 
 static struct resource tegra_rtc_resources[] = {
@@ -542,6 +643,7 @@ static struct tegra_usb_platform_data tegra_udc_pdata = {
 	},
 };
 
+#if !defined(CONFIG_ARM64)
 static struct tegra_usb_platform_data tegra_ehci1_utmi_pdata = {
 	.port_otg = true,
 	.has_hostpc = true,
@@ -661,13 +763,25 @@ static struct tegra_usb_otg_data tegra_otg_pdata = {
 	.ehci_pdata = &tegra_ehci1_utmi_pdata,
 };
 
+#else
+static struct tegra_usb_otg_data tegra_otg_pdata;
+#endif
+
 static void ardbeg_usb_init(void)
 {
+#if !defined(CONFIG_ARM64)
 	int usb_port_owner_info = tegra_get_usb_port_owner_info();
 	int modem_id = tegra_get_modem_id();
+#endif
 	struct board_info bi;
 	tegra_get_pmu_board_info(&bi);
 
+	/* ST8 is supported through DT, return */
+	if (board_info.board_id == BOARD_P1761 ||
+			of_machine_is_compatible("nvidia,green-arrow"))
+		return;
+
+#if !defined(CONFIG_ARM64)
 	if (board_info.sku == 1100 || board_info.board_id == BOARD_P1761 ||
 					board_info.board_id == BOARD_E1784)
 		tegra_ehci1_utmi_pdata.u_data.host.turn_off_vbus_on_lp0 = true;
@@ -676,6 +790,7 @@ static void ardbeg_usb_init(void)
 			board_info.board_id == BOARD_PM358 ||
 			board_info.board_id == BOARD_PM370 ||
 			board_info.board_id == BOARD_PM374 ||
+			board_info.board_id == BOARD_PM375 ||
 			board_info.board_id == BOARD_PM363) {
 		/* Laguna */
 		/* Host cable is detected through AMS PMU Interrupt */
@@ -773,6 +888,7 @@ static struct tegra_xusb_platform_data xusb_pdata = {
 			TEGRA_XUSB_USB2_P1 | TEGRA_XUSB_USB2_P2,
 };
 
+#ifdef CONFIG_TEGRA_XUSB_PLATFORM
 static void ardbeg_xusb_init(void)
 {
 	int usb_port_owner_info = tegra_get_usb_port_owner_info();
@@ -796,6 +912,20 @@ static void ardbeg_xusb_init(void)
 				TEGRA_XUSB_SS_P1 | TEGRA_XUSB_USB2_P2);
 
 		/* FIXME Add for UTMIP2 when have odmdata assigend */
+	} else if (board_info.board_id == BOARD_PM359) {
+		if (!(usb_port_owner_info & UTMI1_PORT_OWNER_XUSB))
+			xusb_pdata.portmap &= ~(TEGRA_XUSB_USB2_P0);
+		if (!(usb_port_owner_info & UTMI2_PORT_OWNER_XUSB))
+			xusb_pdata.portmap &= ~(TEGRA_XUSB_USB2_P2 |
+				TEGRA_XUSB_SS_P0 | TEGRA_XUSB_SS_P1 |
+				TEGRA_XUSB_USB2_P1);
+	} else if (board_info.board_id == BOARD_PM375) {
+		if (!(usb_port_owner_info & UTMI1_PORT_OWNER_XUSB))
+			xusb_pdata.portmap &= ~(TEGRA_XUSB_USB2_P0);
+		if (!(usb_port_owner_info & UTMI2_PORT_OWNER_XUSB))
+			xusb_pdata.portmap &= ~(TEGRA_XUSB_USB2_P2 |
+					TEGRA_XUSB_USB2_P1 | TEGRA_XUSB_SS_P0);
+		xusb_pdata.portmap &= ~(TEGRA_XUSB_SS_P1);
 	} else {
 		/* Ardbeg */
 		if (board_info.board_id == BOARD_E1781) {
@@ -878,6 +1008,7 @@ static struct platform_device icera_bruce_device = {
 
 static void ardbeg_modem_init(void)
 {
+#if !defined(CONFIG_ARM64)
 	int modem_id = tegra_get_modem_id();
 	struct board_info board_info;
 	struct board_info pmu_board_info;
@@ -913,6 +1044,7 @@ static void ardbeg_modem_init(void)
 	default:
 		return;
 	}
+#endif
 }
 
 #ifdef CONFIG_USE_OF
@@ -921,6 +1053,22 @@ static struct of_dev_auxdata ardbeg_auxdata_lookup[] __initdata = {
 	OF_DEV_AUXDATA("nvidia,tegra124-apbdma", 0x60020000, "tegra-apbdma",
 				NULL),
 	OF_DEV_AUXDATA("nvidia,tegra124-se", 0x70012000, "tegra12-se", NULL),
+	OF_DEV_AUXDATA("nvidia,tegra132-dtv", 0x7000c300, "dtv", NULL),
+	OF_DEV_AUXDATA("nvidia,tegra124-dtv", 0x7000c300, "dtv", NULL),
+#if defined(CONFIG_ARM64)
+	OF_DEV_AUXDATA("nvidia,tegra132-udc", 0x7d000000, "tegra-udc.0",
+			&tegra_udc_pdata.u_data.dev),
+	OF_DEV_AUXDATA("nvidia,tegra132-otg", 0x7d000000, "tegra-otg",
+			&tegra_otg_pdata),
+	OF_DEV_AUXDATA("nvidia,tegra132-ehci", 0x7d004000, "tegra-ehci.1",
+			NULL),
+	OF_DEV_AUXDATA("nvidia,tegra132-ehci", 0x7d008000, "tegra-ehci.2",
+			NULL),
+#endif
+	OF_DEV_AUXDATA("nvidia,tegra124-udc", TEGRA_USB_BASE, "tegra-udc.0",
+			NULL),
+	OF_DEV_AUXDATA("nvidia,tegra124-otg", TEGRA_USB_BASE, "tegra-otg",
+			NULL),
 	OF_DEV_AUXDATA("nvidia,tegra124-host1x", TEGRA_HOST1X_BASE, "host1x",
 		NULL),
 	OF_DEV_AUXDATA("nvidia,tegra124-gk20a", TEGRA_GK20A_BAR0_BASE,
@@ -944,10 +1092,35 @@ static struct of_dev_auxdata ardbeg_auxdata_lookup[] __initdata = {
 	T124_I2C_OF_DEV_AUXDATA,
 	OF_DEV_AUXDATA("nvidia,tegra124-xhci", 0x70090000, "tegra-xhci",
 				&xusb_pdata),
+	OF_DEV_AUXDATA("nvidia,tegra132-xhci", 0x70090000, "tegra-xhci",
+				&xusb_pdata),
 	OF_DEV_AUXDATA("nvidia,tegra124-dc", TEGRA_DISPLAY_BASE, "tegradc.0",
 		NULL),
 	OF_DEV_AUXDATA("nvidia,tegra124-dc", TEGRA_DISPLAY2_BASE, "tegradc.1",
 		NULL),
+	OF_DEV_AUXDATA("nvidia,tegra124-nvavp", 0x60001000, "nvavp",
+				NULL),
+	OF_DEV_AUXDATA("nvidia,tegra124-dfll", 0x70110000, "tegra_cl_dvfs",
+		NULL),
+	OF_DEV_AUXDATA("nvidia,tegra132-dfll", 0x70040084, "tegra_cl_dvfs",
+		NULL),
+	OF_DEV_AUXDATA("nvidia,tegra124-efuse", TEGRA_FUSE_BASE, "tegra-fuse",
+		NULL),
+	OF_DEV_AUXDATA("nvidia,tegra124-camera", 0, "pcl-generic",
+				NULL),
+	OF_DEV_AUXDATA("nvidia,tegra124-ahci-sata", 0x70027000, "tegra-sata.0",
+		NULL),
+	OF_DEV_AUXDATA("nvidia,tegra-bluedroid_pm", 0, "bluedroid_pm",
+		NULL),
+	OF_DEV_AUXDATA("pwm-backlight", 0, "pwm-backlight", NULL),
+#ifdef CONFIG_TEGRA_CEC_SUPPORT
+	OF_DEV_AUXDATA("nvidia,tegra124-cec", 0x70015000, "tegra_cec", NULL),
+#endif
+	OF_DEV_AUXDATA("nvidia,tegra-audio-rt5639", 0x0, "tegra-snd-rt5639",
+		NULL),
+	OF_DEV_AUXDATA("nvidia,icera-i500", 0, "tegra_usb_modem_power", NULL),
+	OF_DEV_AUXDATA("nvidia,ptm", 0x7081c000, "ptm", NULL),
+	OF_DEV_AUXDATA("nvidia,tegra30-hda", 0x70030000, "tegra30-hda", NULL),
 	{}
 };
 #endif
@@ -1011,10 +1184,52 @@ static struct rm_spi_ts_platform_data rm31080ts_ardbeg_data = {
 	.name_of_clock_con = "extern2",
 };
 
+static struct rm_spi_ts_platform_data rm31080ts_tn8_data = {
+	.gpio_reset = TOUCH_GPIO_RST_RAYDIUM_SPI,
+	.config = 0,
+	.platform_id = RM_PLATFORM_T008,
+	.name_of_clock = "clk_out_2",
+	.name_of_clock_con = "extern2",
+};
+
+static struct rm_spi_ts_platform_data rm31080ts_tn8_p1765_data = {
+	.gpio_reset = TOUCH_GPIO_RST_RAYDIUM_SPI,
+	.config = 0,
+	.platform_id = RM_PLATFORM_T008_2,
+	.name_of_clock = "clk_out_2",
+	.name_of_clock_con = "extern2",
+};
+
 static struct rm_spi_ts_platform_data rm31080ts_norrin_data = {
 	.gpio_reset = TOUCH_GPIO_RST_RAYDIUM_SPI,
 	.config = 0,
 	.platform_id = RM_PLATFORM_P140,
+	.name_of_clock = "clk_out_2",
+	.name_of_clock_con = "extern2",
+};
+
+struct rm_spi_ts_platform_data rm31080ts_t132loki_data = {
+	.gpio_reset = TOUCH_GPIO_RST_RAYDIUM_SPI,
+	.config = 0,
+	.platform_id = RM_PLATFORM_L005,
+	.name_of_clock = "clk_out_2",
+	.name_of_clock_con = "extern2",
+};
+
+struct rm_spi_ts_platform_data rm31080ts_t132loki_data_jdi_5 = {
+	.gpio_reset = TOUCH_GPIO_RST_RAYDIUM_SPI,
+	.config = 0,
+	.platform_id = RM_PLATFORM_L005,
+	.name_of_clock = "clk_out_2",
+	.name_of_clock_con = "extern2",
+	.gpio_sensor_select0 = false,
+	.gpio_sensor_select1 = true,
+};
+
+static struct rm_spi_ts_platform_data rm31080ts_e2141_data = {
+	.gpio_reset = E2141_TOUCH_GPIO_RST_RAYDIUM_SPI,
+	.config = 0,
+	.platform_id = RM_PLATFORM_T008,
 	.name_of_clock = "clk_out_2",
 	.name_of_clock_con = "extern2",
 };
@@ -1221,6 +1436,18 @@ static struct spi_board_info rm31080a_norrin_spi_board[1] = {
 	},
 };
 
+static struct spi_board_info rm31080a_e2141_spi_board[1] = {
+	{
+		.modalias = "rm_ts_spidev",
+		.bus_num = E2141_TOUCH_SPI_ID,
+		.chip_select = TOUCH_SPI_CS,
+		.max_speed_hz = 12 * 1000 * 1000,
+		.mode = SPI_MODE_0,
+		.controller_data = &dev_cdata,
+		.platform_data = &rm31080ts_e2141_data,
+	},
+};
+
 static int __init ardbeg_touch_init(void)
 {
 	int i;
@@ -1252,13 +1479,16 @@ static void __init ardbeg_sysedp_init(void)
 		else
 			shield_new_sysedp_init();
 		break;
+	case BOARD_E1971:
 	case BOARD_E1922:
 	case BOARD_E1784:
 	case BOARD_P1761:
+	case BOARD_P1765:
 		tn8_new_sysedp_init();
 		break;
 	case BOARD_PM358:
 	case BOARD_PM359:
+	case BOARD_PM375:
 	default:
 		break;
 	}
@@ -1277,13 +1507,16 @@ static void __init ardbeg_sysedp_dynamic_capping_init(void)
 		else
 			shield_sysedp_dynamic_capping_init();
 		break;
+	case BOARD_E1971:
 	case BOARD_E1922:
 	case BOARD_E1784:
 	case BOARD_P1761:
+	case BOARD_P1765:
 		tn8_sysedp_dynamic_capping_init();
 		break;
 	case BOARD_PM358:
 	case BOARD_PM359:
+	case BOARD_PM375:
 	default:
 		break;
 	}
@@ -1343,7 +1576,9 @@ static void __init tegra_ardbeg_early_init(void)
 	ardbeg_sysedp_init();
 	tegra_clk_init_from_table(ardbeg_clk_init_table);
 	tegra_clk_verify_parents();
-	if (of_machine_is_compatible("nvidia,laguna"))
+	if (of_machine_is_compatible("nvidia,jetson-tk1"))
+		tegra_soc_device_init("jetson-tk1");
+	else if (of_machine_is_compatible("nvidia,laguna"))
 		tegra_soc_device_init("laguna");
 	else if (of_machine_is_compatible("nvidia,tn8"))
 		tegra_soc_device_init("tn8");
@@ -1353,6 +1588,14 @@ static void __init tegra_ardbeg_early_init(void)
 		tegra_soc_device_init("ardbeg_sata");
 	else if (of_machine_is_compatible("nvidia,norrin"))
 		tegra_soc_device_init("norrin");
+	else if (of_machine_is_compatible("nvidia,bowmore"))
+		tegra_soc_device_init("bowmore");
+	else if (of_machine_is_compatible("nvidia,t132loki"))
+		tegra_soc_device_init("t132loki");
+	else if (of_machine_is_compatible("nvidia,e2141"))
+		tegra_soc_device_init("e2141");
+	else if (of_machine_is_compatible("nvidia,green-arrow"))
+		tegra_soc_device_init("green-arrow");
 	else
 		tegra_soc_device_init("ardbeg");
 }
@@ -1434,21 +1677,53 @@ static void __init tegra_ardbeg_late_init(void)
 		board_info.fab, board_info.major_revision,
 		board_info.minor_revision);
 
+#ifndef CONFIG_MACH_EXUMA
+	tegra_disp_defer_vcore_override();
+#endif
+
 	ardbeg_display_init();
 	ardbeg_uart_init();
 	ardbeg_usb_init();
+
+	if (!of_machine_is_compatible("nvidia,green-arrow"))
+		ardbeg_modem_init();
+#ifdef CONFIG_TEGRA_XUSB_PLATFORM
 	ardbeg_xusb_init();
+#endif
 	ardbeg_i2c_init();
+
+	if(!of_machine_is_compatible("nvidia,green-arrow"))
+		ardbeg_audio_init();
+
 	platform_add_devices(ardbeg_devices, ARRAY_SIZE(ardbeg_devices));
+
+	if(!of_machine_is_compatible("nvidia,green-arrow"))
+	{
+		if (board_info.board_id == BOARD_PM374)	/* Norrin ERS */
+			platform_device_register(&norrin_audio_device_max98090);
+		else if (board_info.board_id != BOARD_PM359)
+			platform_device_register(&ardbeg_audio_device_rt5639);
+	}
+
 	tegra_io_dpd_init();
-	ardbeg_sdhci_init();
+	if (board_info.board_id == BOARD_E2548 ||
+			board_info.board_id == BOARD_P2530)
+		loki_sdhci_init();
+	else
+		ardbeg_sdhci_init();
 	if (board_info.board_id == BOARD_PM359 ||
 			board_info.board_id == BOARD_PM358 ||
 			board_info.board_id == BOARD_PM370 ||
+			board_info.board_id == BOARD_PM375 ||
 			board_info.board_id == BOARD_PM363)
 		laguna_regulator_init();
 	else if (board_info.board_id == BOARD_PM374)
 		norrin_regulator_init();
+	else if (board_info.board_id == BOARD_E2548 ||
+			board_info.board_id == BOARD_P2530)
+		loki_regulator_init();
+	else if (of_machine_is_compatible("nvidia,e2141"))
+		; /* T210_interposer use DT for power tree*/
 	else
 		ardbeg_regulator_init();
 	ardbeg_suspend_init();
@@ -1480,10 +1755,26 @@ static void __init tegra_ardbeg_late_init(void)
 		tegra_io_dpd_enable(&pexclk2_io);
 	}
 
+	if (board_info.board_id == BOARD_E2548 ||
+			board_info.board_id == BOARD_P2530)
+		loki_kbc_init();
 
-	ardbeg_sensors_init();
-
-	ardbeg_soctherm_init();
+	if (board_info.board_id == BOARD_PM374 ||
+		board_info.board_id == BOARD_PM359 ||
+		board_info.board_id == BOARD_PM358 ||
+		board_info.board_id == BOARD_PM370 ||
+		board_info.board_id == BOARD_PM375 ||
+		board_info.board_id == BOARD_PM363) {
+		ardbeg_sensors_init();
+		norrin_soctherm_init();
+	}	else if (board_info.board_id == BOARD_E2548 ||
+			board_info.board_id == BOARD_P2530) {
+		loki_sensors_init();
+		loki_soctherm_init();
+	}	else {
+		ardbeg_sensors_init();
+		ardbeg_soctherm_init();
+	}
 
 #ifdef CONFIG_BLUEDROID_PM
 	ardbeg_setup_bluedroid_pm();
@@ -1500,17 +1791,104 @@ static void __init ardbeg_ramconsole_reserve(unsigned long size)
 }
 static void __init tegra_ardbeg_init_early(void)
 {
-	ardbeg_rail_alignment_init();
+
+	tegra_get_board_info(&board_info);
+	if (board_info.board_id == BOARD_E2548 ||
+			board_info.board_id == BOARD_P2530)
+		loki_rail_alignment_init();
+	else
+		ardbeg_rail_alignment_init();
 	tegra12x_init_early();
 }
+
+static int tegra_ardbeg_notifier_call(struct notifier_block *nb,
+				    unsigned long event, void *data)
+{
+#ifndef CONFIG_TEGRA_HDMI_PRIMARY
+	struct device *dev = data;
+#endif
+	switch (event) {
+	case BUS_NOTIFY_BIND_DRIVER:
+#ifndef CONFIG_TEGRA_HDMI_PRIMARY
+		if (dev->of_node) {
+			if (of_device_is_compatible(dev->of_node,
+				"pwm-backlight")) {
+				tegra_pwm_bl_ops_register(dev);
+			}
+		}
+#endif
+		break;
+	default:
+		break;
+	}
+	return NOTIFY_DONE;
+}
+
+
+static int tegra_ardbeg_i2c_notifier_call(struct notifier_block *nb,
+			unsigned long event, void *data)
+{
+#ifndef CONFIG_TEGRA_HDMI_PRIMARY
+	struct device *dev = data;
+#endif
+
+	switch (event) {
+	case BUS_NOTIFY_BIND_DRIVER:
+#ifndef CONFIG_TEGRA_HDMI_PRIMARY
+		if (dev->of_node) {
+			if (of_device_is_compatible(dev->of_node,
+					"ti,lp8550") ||
+				of_device_is_compatible(dev->of_node,
+					"ti,lp8551") ||
+				of_device_is_compatible(dev->of_node,
+					"ti,lp8552") ||
+				of_device_is_compatible(dev->of_node,
+					"ti,lp8553") ||
+				of_device_is_compatible(dev->of_node,
+					"ti,lp8554") ||
+				of_device_is_compatible(dev->of_node,
+					"ti,lp8555") ||
+				of_device_is_compatible(dev->of_node,
+					"ti,lp8556") ||
+				of_device_is_compatible(dev->of_node,
+					"ti,lp8557")) {
+					ti_lp855x_bl_ops_register(dev);
+			}
+		}
+#endif
+		break;
+	default:
+		break;
+	}
+	return NOTIFY_DONE;
+}
+
+static struct notifier_block platform_nb = {
+	.notifier_call = tegra_ardbeg_notifier_call,
+};
+
+
+static struct notifier_block i2c_nb = {
+	.notifier_call = tegra_ardbeg_i2c_notifier_call,
+};
 
 static void __init tegra_ardbeg_dt_init(void)
 {
 	tegra_get_board_info(&board_info);
 	tegra_get_display_board_info(&display_board_info);
 
+#ifndef CONFIG_TEGRA_HDMI_PRIMARY
+	/* In Ardbeg, zero display_board_id is considered to
+	 * Panasonic wuxga panel one */
+	tegra_set_fixed_panel_ops(true, &dsi_p_wuxga_10_1_ops,
+		"p,wuxga-10-1");
+	tegra_set_fixed_pwm_bl_ops(dsi_p_wuxga_10_1_ops.pwm_bl_ops);
+#endif
+	bus_register_notifier(&platform_bus_type, &platform_nb);
+	bus_register_notifier(&i2c_bus_type, &i2c_nb);
 	tegra_ardbeg_early_init();
 #ifdef CONFIG_USE_OF
+	ardbeg_camera_auxdata(ardbeg_auxdata_lookup);
 	of_platform_populate(NULL,
 		of_default_bus_match_table, ardbeg_auxdata_lookup,
 		&platform_bus);
@@ -1560,6 +1938,36 @@ static const char * const norrin_dt_board_compat[] = {
 	"nvidia,norrin",
 	NULL
 };
+
+static const char * const bowmore_dt_board_compat[] = {
+	"nvidia,bowmore",
+	NULL
+};
+
+static const char * const loki_dt_board_compat[] = {
+	"nvidia,t132loki",
+	NULL
+};
+
+static const char * const jetson_dt_board_compat[] = {
+	"nvidia,jetson-tk1",
+	NULL
+};
+
+#ifdef CONFIG_ARCH_TEGRA_13x_SOC
+DT_MACHINE_START(LOKI, "t132loki")
+	.atag_offset	= 0x100,
+	.smp		= smp_ops(tegra_smp_ops),
+	.map_io		= tegra_map_common_io,
+	.reserve	= tegra_ardbeg_reserve,
+	.init_early	= tegra_ardbeg_init_early,
+	.init_irq	= irqchip_init,
+	.init_time	= clocksource_of_init,
+	.init_machine	= tegra_ardbeg_dt_init,
+	.dt_compat	= loki_dt_board_compat,
+	.init_late      = tegra_init_late
+MACHINE_END
+#endif
 
 DT_MACHINE_START(LAGUNA, "laguna")
 	.atag_offset	= 0x100,
@@ -1617,6 +2025,19 @@ DT_MACHINE_START(NORRIN, "norrin")
 	.init_late      = tegra_init_late
 MACHINE_END
 
+DT_MACHINE_START(BOWMORE, "bowmore")
+	.atag_offset	= 0x100,
+	.smp		= smp_ops(tegra_smp_ops),
+	.map_io		= tegra_map_common_io,
+	.reserve	= tegra_ardbeg_reserve,
+	.init_early	= tegra_ardbeg_init_early,
+	.init_irq	= irqchip_init,
+	.init_time	= clocksource_of_init,
+	.init_machine	= tegra_ardbeg_dt_init,
+	.dt_compat	= bowmore_dt_board_compat,
+	.init_late      = tegra_init_late
+MACHINE_END
+
 DT_MACHINE_START(ARDBEG, "ardbeg")
 	.atag_offset	= 0x100,
 	.smp		= smp_ops(tegra_smp_ops),
@@ -1644,4 +2065,17 @@ DT_MACHINE_START(ARDBEG_SATA, "ardbeg_sata")
 	.dt_compat	= ardbeg_sata_dt_board_compat,
 	.init_late      = tegra_init_late
 
+MACHINE_END
+
+DT_MACHINE_START(JETSON_TK1, "jetson-tk1")
+	.atag_offset	= 0x100,
+	.smp		= smp_ops(tegra_smp_ops),
+	.map_io		= tegra_map_common_io,
+	.reserve	= tegra_ardbeg_reserve,
+	.init_early	= tegra_ardbeg_init_early,
+	.init_irq	= irqchip_init,
+	.init_time	= clocksource_of_init,
+	.init_machine	= tegra_ardbeg_dt_init,
+	.dt_compat	= jetson_dt_board_compat,
+	.init_late      = tegra_init_late
 MACHINE_END
